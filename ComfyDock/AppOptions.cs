@@ -1,0 +1,178 @@
+﻿using System;
+using System.IO;
+
+namespace ComfyDock;
+
+/// <summary>
+/// 命令行选项——全部可覆盖，默认值面向本机现状（D:\done\google + 系统 chrome）。
+/// </summary>
+public sealed class AppOptions
+{
+    /// <summary>快捷方式所在目录。</summary>
+    public string GoogleRoot { get; set; } = @"D:\done\google";
+
+    /// <summary>chrome.exe 路径。</summary>
+    public string ChromePath { get; set; } = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
+
+    /// <summary>数据目录（accounts.json 所在）。</summary>
+    public string DataDir { get; set; } = "";
+
+    /// <summary>面板监听端口。</summary>
+    public int Port { get; set; } = 8971;
+
+    /// <summary>采集目标页。</summary>
+    public string Url { get; set; } = "https://www.runninghub.cn/";
+
+    /// <summary>工作台页（工作流列表来源）。</summary>
+    public string WorkspaceUrl { get; set; } = "https://www.runninghub.cn/workspace";
+    /// <summary>本地 ComfyUI 地址（探测状态与打开界面都用它）。</summary>
+    public string LocalComfyUrl { get; set; } = "http://127.0.0.1:8188/";
+    /// <summary>本地 ComfyUI 启动脚本（未运行时一键启动；工作目录取脚本所在目录）。</summary>
+    public string LocalComfyLauncher { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\运行.bat";
+
+    /// <summary>本地 ComfyUI 工作流目录（待上传的工作流来源）。</summary>
+    public string LocalWorkflowsRoot { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\user\default\workflows";
+
+    /// <summary>线上识别产物落点目录（默认 exe 同级 out）。</summary>
+    public string RhOutDir { get; set; } = "";
+
+    /// <summary>线上识别 CLI——提交一条音频（完整路径）后退出；空 = 不起 CLI 分支。</summary>
+    public string RhSubmit { get; set; } = "";
+
+    /// <summary>线上识别 CLI——提交目标工作区 id（空 = 第一条工作区）。</summary>
+    public string RhWorkspace { get; set; } = "";
+
+    /// <summary>线上识别 CLI——轮询一轮后退出。</summary>
+    public bool RhPoll { get; set; }
+
+    /// <summary>线上识别 CLI——打印状态后退出。</summary>
+    public bool RhStatus { get; set; }
+
+    /// <summary>latent 解码 CLI——把 safetensors latent 解成 png 后退出；空 = 不起该分支。</summary>
+    public string LatentDecode { get; set; } = "";
+    /// <summary>自建中间态 CLI——把 safetensors latent 转成 `.cdlat` 后退出；空 = 不起该分支。</summary>
+    public string CdlatPack { get; set; } = "";
+    /// <summary>自建中间态 CLI——把 `.cdlat` 还原成 png 后退出；空 = 不起该分支。</summary>
+    public string CdlatUnpack { get; set; } = "";
+
+    /// <summary>采集并发度（默认 2——并行采集；历史实测并发 3（dump-dom 版）与系统内既有 chrome 进程争抢明显，故从 2 起步）。</summary>
+    public int Concurrency { get; set; } = 2;
+
+    /// <summary>启动后不自动打开浏览器。</summary>
+    public bool NoBrowser { get; set; }
+
+    /// <summary>快照文件完整路径。</summary>
+    public string SnapshotPath => Path.Combine(DataDir, "accounts.json");
+
+    /// <summary>解析命令行参数。</summary>
+    /// <param name="args">原始参数数组。</param>
+    /// <returns>选项对象；未知参数或非法值抛异常。</returns>
+    public static AppOptions Parse(string[] args)
+    {
+        var options = new AppOptions();
+        for (int i = 0; i < args.Length; i++)
+        {
+            string key = args[i];
+            switch (key)
+            {
+                case "--google-root":
+                    options.GoogleRoot = RequireValue(args, ref i, key);
+                    break;
+                case "--chrome":
+                    options.ChromePath = RequireValue(args, ref i, key);
+                    break;
+                case "--data":
+                    options.DataDir = RequireValue(args, ref i, key);
+                    break;
+                case "--port":
+                    options.Port = RequireInt(args, ref i, key);
+                    break;
+                case "--url":
+                    options.Url = RequireValue(args, ref i, key);
+                    break;
+                case "--local-url":
+                    options.LocalComfyUrl = RequireValue(args, ref i, key);
+                    break;
+                case "--local-launcher":
+                    options.LocalComfyLauncher = RequireValue(args, ref i, key);
+                    break;
+                case "--concurrency":
+                    options.Concurrency = RequireInt(args, ref i, key);
+                    break;
+                case "--rh-out":
+                    options.RhOutDir = RequireValue(args, ref i, key);
+                    break;
+                case "--rh-submit":
+                    options.RhSubmit = RequireValue(args, ref i, key);
+                    break;
+                case "--rh-workspace":
+                    options.RhWorkspace = RequireValue(args, ref i, key);
+                    break;
+                case "--rh-poll":
+                    options.RhPoll = true;
+                    break;
+                case "--rh-status":
+                    options.RhStatus = true;
+                    break;
+                case "--latent-decode":
+                    options.LatentDecode = RequireValue(args, ref i, key);
+                    break;
+                case "--cdlat-pack":
+                    options.CdlatPack = RequireValue(args, ref i, key);
+                    break;
+                case "--cdlat-unpack":
+                    options.CdlatUnpack = RequireValue(args, ref i, key);
+                    break;
+                case "--no-browser":
+                    options.NoBrowser = true;
+                    break;
+                default:
+                    throw new ArgumentException("未知参数：" + key);
+            }
+        }
+
+        if (options.Concurrency < 1)
+        {
+            throw new ArgumentException("--concurrency 必须 ≥ 1");
+        }
+
+        if (options.Port is < 1 or > 65535)
+        {
+            throw new ArgumentException("--port 必须在 1..65535");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.DataDir))
+        {
+            options.DataDir = Path.Combine(AppContext.BaseDirectory, "data");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.RhOutDir))
+        {
+            options.RhOutDir = Path.Combine(AppContext.BaseDirectory, "out");
+        }
+
+        return options;
+    }
+
+    private static string RequireValue(string[] args, ref int i, string key)
+    {
+        if (i + 1 >= args.Length)
+        {
+            throw new ArgumentException("参数缺值：" + key);
+        }
+
+        i++;
+        return args[i];
+    }
+
+    private static int RequireInt(string[] args, ref int i, string key)
+    {
+        string raw = RequireValue(args, ref i, key);
+        if (!int.TryParse(raw, out int value))
+        {
+            throw new ArgumentException("参数非整数：" + key + " = " + raw);
+        }
+
+        return value;
+    }
+}

@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>ComfyDock</AssemblyName>
+    <RootNamespace>ComfyDock</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>0.25</Version>
+
+    <!-- 发布落点：仓库根（双击 ComfyDock.exe 即用），不再单列 dist 目录 -->
+    <PublishDir>$(MSBuildThisFileDirectory)..\</PublishDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Web\wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

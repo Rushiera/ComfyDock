@@ -1,0 +1,27 @@
+# ComfyDock —— 入库排除规则
+# 行尾与编码基线见 .gitattributes / .editorconfig
+
+# 编译产物（可重建）
+bin/
+obj/
+
+# 运行时数据（含账号密钥，不入库）—— 只钉仓库根
+/data/
+
+# 发布产物（dotnet publish 落点）—— 只钉仓库根
+/Web/
+
+# 旧发布落点（v0.7 前，含旧映像与运行时数据）
+/dist/
+
+# 线上识别 / 生成产物落点
+/out/
+
+# 调试符号与上一版映像
+*.pdb
+*.old
+
+# 本地配置与缓存
+.vs/
+*.user
+CatTemp/

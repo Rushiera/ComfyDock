@@ -1,0 +1,1660 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ComfyDock 账号面板</title>
+  <style>
+    :root {
+      --bg: #f5f6f8; --card: #ffffff; --line: #e3e6ea; --ink: #1f2329; --dim: #6b7280;
+      --ok-bg: #e9f8ee; --ok-line: #34a853; --ok-ink: #1b7a37;
+      --bad-bg: #fdecec; --bad-line: #e5484d; --bad-ink: #b3261e;
+      --active-bg: #fff7e0; --brand: #2b6cb0;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 14px/1.6 "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    }
+
+    header {
+      display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+      background: var(--card); border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; z-index: 2;
+    }
+
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+    header .spacer { flex: 1; }
+
+    .progress { color: var(--dim); font-size: 13px; min-width: 300px; text-align: right; }
+    .progress.busy { color: var(--brand); font-weight: 600; }
+
+    .bar { height: 4px; background: #e8ebef; overflow: hidden; }
+    .bar > i { display: block; height: 100%; width: 0; background: var(--brand); transition: width .3s ease; }
+
+    button { font: inherit; border-radius: 6px; border: 1px solid transparent; padding: 7px 14px; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+
+    .btn-primary { background: var(--brand); color: #fff; }
+    .btn-open { background: var(--bad-line); color: #fff; padding: 4px 10px; font-size: 12px; }
+    .btn-refresh { background: #eef1f5; color: #374151; padding: 4px 10px; font-size: 12px; }
+    .btn-refresh:hover:not(:disabled) { background: #e2e7ee; }
+    .btn-wf { background: #eaf2fb; color: #1f4e79; padding: 3px 9px; font-size: 12px; }
+    .btn-wf:hover:not(:disabled) { background: #d9e8f8; }
+    .btn-del { background: #fdecec; color: #b3261e; padding: 3px 9px; font-size: 12px; }
+    .btn-del:hover:not(:disabled) { background: #f9d7d7; }
+    .btn-mini { background: #eef1f5; color: #374151; padding: 2px 8px; font-size: 12px; }
+
+    .btn-local { background: #eef1f5; color: #374151; border-color: var(--line); padding: 6px 12px; font-size: 13px; }
+    .btn-local.state-ok { background: var(--ok-line); color: #fff; border-color: var(--ok-line); }
+    .btn-local.state-bad { background: var(--bad-bg); color: var(--bad-ink); border-color: var(--bad-line); }
+    .btn-local.state-busy { background: var(--brand); color: #fff; border-color: var(--brand); }
+
+    .hdr-sep { width: 1px; height: 22px; background: var(--line); }
+    .btn-app { background: #eef1f5; color: #374151; border-color: var(--line); padding: 6px 12px; font-size: 13px; }
+    .btn-app:hover:not(:disabled) { background: #e2e7ee; }
+    .btn-app.danger { background: var(--bad-bg); color: var(--bad-ink); border-color: var(--bad-line); }
+    .btn-app.danger:hover:not(:disabled) { background: #f9d7d7; }
+    .ver { color: var(--dim); font-size: 12px; white-space: nowrap; }
+
+    main { padding: 18px 20px 60px; }
+
+    .meta { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 12px; color: var(--dim); font-size: 13px; }
+    .meta b { color: var(--ink); font-weight: 600; }
+
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+      overflow: hidden; margin-bottom: 14px;
+    }
+
+    .card-head {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px; background: #fafbfc; border-bottom: 1px solid var(--line);
+    }
+
+    .card-head b { font-size: 14px; }
+    .card-head .spacer { flex: 1; }
+
+    table { width: 100%; border-collapse: collapse; }
+
+    th, td {
+      padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: middle;
+    }
+
+    th { background: #fafbfc; font-weight: 600; color: var(--dim); font-size: 13px; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+
+    tr.row-ok { background: var(--ok-bg); }
+    tr.row-bad { background: var(--bad-bg); }
+    tr.row-active { background: var(--active-bg); box-shadow: inset 3px 0 0 var(--brand); }
+    tr.drop-hover { outline: 2px dashed var(--brand); outline-offset: -2px; }
+
+    /* 账号行整行可点——点哪都能展开 / 收起该行的工作流列表 */
+    #rows > tr:not(.detail-row) { cursor: pointer; }
+
+    td.coin { font-weight: 700; font-size: 15px; white-space: nowrap; }
+    tr.row-ok td.coin { color: var(--ok-ink); }
+    tr.row-bad td.coin { color: var(--bad-ink); }
+
+    .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; white-space: nowrap; }
+    .tag-ok { background: var(--ok-line); color: #fff; }
+    .tag-bad { background: var(--bad-line); color: #fff; }
+    .tag-busy { background: var(--brand); color: #fff; }
+    .tag-click { cursor: pointer; }
+    .tag-click:hover { filter: brightness(1.12); }
+
+    .path { font-family: Consolas, "Courier New", monospace; font-size: 12px; color: var(--dim); word-break: break-all; }
+    .reason { color: var(--bad-ink); font-size: 12px; }
+    .gain-line { color: var(--dim); font-size: 12px; margin-top: 2px; }
+    .actions { white-space: nowrap; display: flex; gap: 6px; }
+    .empty { padding: 30px; text-align: center; color: var(--dim); }
+
+    .local-list { display: block; padding: 10px 14px; max-height: 300px; overflow-y: auto; }
+
+    .group { margin-bottom: 8px; }
+    .group:last-child { margin-bottom: 0; }
+    .group-head {
+      display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+      font-size: 11px; font-weight: 600; color: var(--dim);
+      padding: 2px 0 4px; word-break: break-all;
+    }
+
+    .group-head:hover { color: var(--ink); }
+
+    .fold {
+      flex: none; border: 1px solid var(--line); border-radius: 4px; background: #fff;
+      color: var(--dim); font-size: 10px; line-height: 1; padding: 2px 5px;
+    }
+
+    .group-head:hover .fold { border-color: var(--brand); color: var(--brand); }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .chip {
+      border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px;
+      background: #fff; cursor: grab; font-size: 11px; line-height: 1.6;
+      max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    .chip:hover { border-color: var(--brand); background: #f7fbff; }
+    .chip:active { cursor: grabbing; }
+
+    tr.detail-row > td { background: #fbfcfd; padding: 0 12px 12px 12px; }
+
+    table.wf {
+      width: 100%; border-collapse: collapse; background: #fff;
+      border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    }
+
+    table.wf th, table.wf td { padding: 6px 10px; font-size: 13px; border-bottom: 1px solid #eef1f4; }
+    table.wf th { background: #f6f8fa; color: var(--dim); font-weight: 600; }
+    table.wf tr:last-child td { border-bottom: none; }
+
+    .wf-note { color: var(--dim); font-size: 13px; padding: 6px 2px; }
+
+    .toast {
+      position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%);
+      background: #1f2329; color: #fff; padding: 10px 18px; border-radius: 8px;
+      font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s ease; z-index: 10;
+    }
+
+    .toast.show { opacity: .95; }
+
+    /* 能力板块切换（本地工作流 / 线上识别） */
+    .cap-tab {
+      border: 1px solid var(--line); background: #fff; color: var(--dim);
+      border-radius: 6px; padding: 3px 10px; font-size: 12px; font-weight: 600;
+    }
+
+    .cap-tab.on { border-color: var(--brand); color: var(--brand); background: #f2f8ff; }
+
+    .sub-head { display: flex; align-items: center; gap: 6px; padding: 8px 0 6px; }
+
+    .rh-block { margin-top: 12px; }
+    .rh-block h4 { font-size: 13px; margin: 0 0 6px; color: var(--ink); }
+
+    .rh-src { font-size: 12px; color: var(--dim); padding: 4px 0; word-break: break-all; }
+
+    .tag-auto {
+      border: 1px dashed var(--line); border-radius: 6px; padding: 3px 8px;
+      font-size: 12px; color: var(--dim); cursor: pointer; user-select: none;
+    }
+
+    .tag-auto.on { border-style: solid; border-color: var(--brand); color: var(--brand); background: #f2f8ff; }
+
+    .rh-list {
+      border: 1px solid var(--line); border-radius: 8px; background: #fff;
+      max-height: 260px; overflow: auto;
+    }
+
+    /* 工作区折叠块——每块一条云端工作流，音频源与任务各归各块 */
+    .ws {
+      border: 1px solid var(--line); border-radius: 8px; background: #fff;
+      margin-bottom: 8px; overflow: hidden;
+    }
+
+    .ws-head {
+      display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+      cursor: pointer; user-select: none; background: #fbfcfd;
+    }
+
+    .ws-head:hover { background: #f6f8fa; }
+
+    .ws-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+
+    .ws-fold {
+      flex: none; border: 1px solid var(--line); border-radius: 4px; background: #fff;
+      color: var(--dim); font-size: 10px; line-height: 1; padding: 2px 5px;
+    }
+
+    .ws-head:hover .ws-fold { border-color: var(--brand); color: var(--brand); }
+
+    .ws-flow { font-family: Consolas, "Courier New", monospace; font-size: 12px; color: var(--dim); }
+
+    .ws-body { padding: 8px 10px 10px; border-top: 1px solid #eef1f4; }
+
+    .ws-flow-edit { display: flex; align-items: center; gap: 6px; padding: 4px 0 6px; }
+
+    .ws-flow-edit input {
+      flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 6px;
+      padding: 3px 7px; font-size: 12px; font-family: Consolas, "Courier New", monospace;
+    }
+
+    .ws-block { margin-top: 8px; }
+    .ws-block h5 { font-size: 12px; margin: 0 0 5px; color: var(--ink); }
+
+    .ws-prompt {
+      width: 100%; box-sizing: border-box; resize: vertical; min-height: 52px;
+      border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+      font-size: 12px; font-family: inherit; line-height: 1.5;
+    }
+
+    .rh-item {
+      display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+      font-size: 12px; border-bottom: 1px solid #eef1f4;
+    }
+
+    .rh-item:last-child { border-bottom: none; }
+    .rh-item .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rh-dim { color: var(--dim); }
+    .rh-bad { color: #c0392b; }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>ComfyDock 控制台</h1>
+    <span class="spacer"></span>
+    <button id="localBtn" class="btn-local">本地 ComfyUI：检测中…</button>
+    <button id="collectBtn" class="btn-primary">全量采集</button>
+    <span id="progress" class="progress"></span>
+    <span class="hdr-sep"></span>
+    <span id="appVer" class="ver">—</span>
+    <button id="restartBtn" class="btn-app" title="重启面板——拉起新实例，本进程退出">重启</button>
+    <button id="closeBtn" class="btn-app danger" title="关闭面板——只停本程序，浏览器窗口不受影响">关闭</button>
+  </header>
+  <div class="bar"><i id="bar"></i></div>
+
+  <main>
+    <div class="meta">
+      <span>快照：<b id="generated">—</b></span>
+      <span>快捷方式目录：<b id="googleRoot">—</b></span>
+      <span>快照文件：<b id="snapshotPath">—</b></span>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <b>能力板块</b>
+        <button class="cap-tab on" id="capTabLocal">本地工作流</button>
+        <button class="cap-tab" id="capTabRh">线上识别</button>
+        <span class="spacer"></span>
+        <span class="path" id="capHint">—</span>
+      </div>
+
+      <div id="capLocal">
+        <div class="sub-head">
+          <button class="btn-mini" id="localReload">重新扫描</button>
+          <button class="btn-mini" id="localSort" title="按文件夹里最后一次改动的时间倒序排列（顺序会记住）">整理</button>
+          <span class="spacer"></span>
+          <span class="path" id="localRoot">—</span>
+          <span id="localCount" class="path">—</span>
+        </div>
+        <div class="local-list" id="localList"></div>
+        <div class="empty" id="localEmpty">扫描中…</div>
+      </div>
+
+      <div id="capRh" style="display:none">
+        <div class="sub-head">
+          <button class="btn-mini" id="rhAdd" title="预留其他线上识别——给新工作流加一块">新增工作区</button>
+          <span class="spacer"></span>
+          <span class="path" id="rhOut">—</span>
+        </div>
+
+        <div id="rhWorkspaces"></div>
+
+        <div class="rh-block">
+          <h4 id="rhAccountHead">账号（复用主表，不显示密钥）</h4>
+          <div class="rh-list" id="rhAccounts"></div>
+        </div>
+
+        <div class="rh-block">
+          <h4>最近事件</h4>
+          <div class="rh-list" id="rhEvents"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <table id="grid">
+        <thead>
+          <tr>
+            <th style="width:80px">状态</th>
+            <th style="width:190px">快捷方式</th>
+            <th style="width:120px">浏览器用户目录</th>
+            <th style="width:130px">账号</th>
+            <th style="width:96px">API 密钥</th>
+            <th style="width:80px">RH 币</th>
+            <th style="width:100px">工作流</th>
+            <th>说明</th>
+            <th style="width:150px">操作</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty">尚无数据——点右上角「全量采集」开始。</div>
+    </div>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const STATUS_TEXT = {
+      "ok": "已登录", "not-logged-in": "未登录", "running": "运行中",
+      "error": "采集失败", "unknown": "未采集"
+    };
+
+    const expanded = new Set();
+    let pollTimer = null;
+    let lastProgress = null;
+    let toastTimer = null;
+    let localItems = [];
+    let workspaceUrl = "";
+    let queue = null;
+    let lastTaskId = 0;
+    let taskBaseline = false;
+    let pendingOpen = null;
+
+    function toast(message) {
+      const el = document.getElementById("toast");
+      el.textContent = message;
+      el.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove("show"), 3000);
+    }
+
+    function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+    async function loadOptions() {
+      try {
+        const opt = await fetch("/api/options").then(r => r.json());
+        document.getElementById("googleRoot").textContent = opt.googleRoot || "—";
+        document.getElementById("snapshotPath").textContent = opt.snapshotPath || "—";
+        workspaceUrl = opt.workspaceUrl || "https://www.runninghub.cn/workspace";
+      } catch (e) { /* 选项面失败不阻断面板 */ }
+    }
+
+    // 版本自证——显示本实例版本与启动时刻；换版位上的文件比本实例新时提示可以重启换版
+    async function loadVersion() {
+      const el = document.getElementById("appVer");
+      try {
+        const v = await fetch("/api/app/version", { cache: "no-store" }).then(r => r.json());
+        let label = "v" + (v.version || "?") + " · 启动 " + (v.startedAt || "—");
+        if (v.slotNewer) { label += " · 有新版本待换"; }
+        el.textContent = label;
+        el.title = "映像：" + (v.imagePath || "—")
+          + "\n换版位：" + (v.slotPath || "—") + "（" + (v.slotStamp || "—") + "）"
+          + "\n进程：" + (v.pid || "—");
+        if (v.slotNewer) {
+          document.getElementById("restartBtn").title = "换版位上的文件比本实例新——点重启即换到新版本";
+        }
+      } catch (e) {
+        el.textContent = "版本读取失败";
+      }
+    }
+
+    async function loadLocal() {
+      const empty = document.getElementById("localEmpty");
+      const box = document.getElementById("localList");
+      try {
+        const data = await fetch("/api/local-workflows").then(r => r.json());
+        document.getElementById("localRoot").textContent = data.root || "—";
+        document.getElementById("localCount").textContent = (data.count || 0) + " 个";
+        localItems = data.items || [];
+        box.innerHTML = "";
+        if (!data.ok || localItems.length === 0) {
+          empty.style.display = "block";
+          empty.textContent = data.error || "该目录下没有 .json 工作流";
+          return;
+        }
+        empty.style.display = "none";
+        renderLocal(localItems);
+      } catch (e) {
+        empty.style.display = "block";
+        empty.textContent = "扫描失败：" + e.message;
+      }
+    }
+
+    const LOCAL_PANEL_KEY = "comfydock.localPanel";
+
+    let localPanel = loadLocalPanel();
+
+    function loadLocalPanel() {
+      try {
+        const raw = window.localStorage.getItem(LOCAL_PANEL_KEY);
+        if (!raw) { return { order: [], collapsed: [] }; }
+        const data = JSON.parse(raw);
+        return {
+          order: Array.isArray(data.order) ? data.order : [],
+          collapsed: Array.isArray(data.collapsed) ? data.collapsed : []
+        };
+      } catch (e) {
+        return { order: [], collapsed: [] };
+      }
+    }
+
+    function saveLocalPanel() {
+      try {
+        window.localStorage.setItem(LOCAL_PANEL_KEY, JSON.stringify(localPanel));
+      } catch (e) {
+        toast("顺序 / 折叠状态没记住（浏览器禁了本地存储）");
+      }
+    }
+
+    // 每个文件夹的"最后改动" = 组内文件修改时间的最新值
+    function latestByFolder(items) {
+      const latest = new Map();
+      for (const wf of items) {
+        const key = wf.dir || "";
+        const stamp = wf.modified || "";
+        const seen = latest.get(key);
+        if (seen === undefined || stamp > seen) { latest.set(key, stamp); }
+      }
+      return latest;
+    }
+
+    // 记忆里的顺序优先；记忆外的文件夹（比如新出现的）排在末尾
+    function applyFolderOrder(keys) {
+      const order = localPanel.order || [];
+      const known = [];
+      const unknown = [];
+      for (const key of keys) {
+        if (order.indexOf(key) >= 0) { known.push(key); } else { unknown.push(key); }
+      }
+      known.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+      unknown.sort();
+      return known.concat(unknown);
+    }
+
+    function toggleFolder(key) {
+      const idx = localPanel.collapsed.indexOf(key);
+      if (idx >= 0) { localPanel.collapsed.splice(idx, 1); }
+      else { localPanel.collapsed.push(key); }
+      saveLocalPanel();
+      renderLocal(localItems);
+    }
+
+    // 整理——按文件夹最后改动时间倒序（只要组内有一个文件更新过，该文件夹就排到最前）
+    function sortLocal() {
+      if (localItems.length === 0) {
+        toast("还没扫到工作流——先点「重新扫描」");
+        return;
+      }
+
+      const latest = latestByFolder(localItems);
+      const keys = Array.from(latest.keys());
+      keys.sort((a, b) => {
+        const ta = latest.get(a) || "";
+        const tb = latest.get(b) || "";
+        if (ta !== tb) { return ta > tb ? -1 : 1; }
+        return a.localeCompare(b);
+      });
+
+      localPanel.order = keys;
+      saveLocalPanel();
+      renderLocal(localItems);
+      toast("已按文件夹最新改动排序（顺序记住了）");
+    }
+
+    function renderLocal(items) {
+      const box = document.getElementById("localList");
+
+      // 🔴 重建前先清空——否则每次折叠 / 整理都在旧列表后追加一份（数量翻倍，旧份状态不变 → 看着没反应）
+      box.innerHTML = "";
+
+      // 按子目录分组——组内只列文件名，便于按类查找
+      const groups = new Map();
+      for (const wf of items) {
+        const key = wf.dir || "";
+        if (!groups.has(key)) { groups.set(key, []); }
+        groups.get(key).push(wf);
+      }
+
+      const keys = applyFolderOrder(Array.from(groups.keys()));
+      for (const key of keys) {
+        const list = groups.get(key);
+        const collapsed = localPanel.collapsed.indexOf(key) >= 0;
+
+        const group = document.createElement("div");
+        group.className = "group";
+
+        // 组头即折叠开关——点击收起 / 展开（点击由列表容器统一委托，见初始化区）
+        const head = document.createElement("div");
+        head.className = "group-head";
+        head.setAttribute("data-dir", key);
+        head.title = collapsed ? "点击展开" : "点击折叠";
+
+        const fold = document.createElement("span");
+        fold.className = "fold";
+        fold.textContent = collapsed ? "▸" : "▾";
+
+        head.appendChild(fold);
+        head.appendChild(document.createTextNode((key === "" ? "（根目录）" : key) + " · " + list.length + " 个"));
+
+        group.appendChild(head);
+
+        // 折叠时干脆不建 chip 子树——展开即重建，视觉必然跟着状态走
+        if (!collapsed) {
+          const chips = document.createElement("div");
+          chips.className = "chips";
+          for (const wf of list) { chips.appendChild(buildChip(wf)); }
+          group.appendChild(chips);
+        }
+
+        box.appendChild(group);
+      }
+    }
+
+    function buildChip(wf) {
+      const chip = document.createElement("div");
+      chip.className = "chip";
+      chip.draggable = true;
+      chip.textContent = wf.file || wf.name;
+      chip.title = wf.full + "（拖到账号行上即可上传）";
+      chip.ondragstart = (e) => {
+        e.dataTransfer.setData("text/plain", wf.full);
+        e.dataTransfer.effectAllowed = "copy";
+      };
+      return chip;
+    }
+
+    async function loadAccounts() {
+      const snapshot = await fetch("/api/accounts").then(r => r.json());
+      render(snapshot);
+    }
+
+    function render(snapshot) {
+      const rows = document.getElementById("rows");
+      const empty = document.getElementById("empty");
+      const accounts = (snapshot && snapshot.accounts) || [];
+      const currentName = (lastProgress && lastProgress.running) ? lastProgress.current : "";
+
+      document.getElementById("generated").textContent =
+        (snapshot && snapshot.generatedAt) ? snapshot.generatedAt : "尚无";
+
+      rows.innerHTML = "";
+
+      if (accounts.length === 0) {
+        empty.style.display = "block";
+        return;
+      }
+      empty.style.display = "none";
+
+      for (const account of accounts) {
+        rows.appendChild(buildRow(account, currentName));
+        if (expanded.has(account.shortcutPath)) {
+          rows.appendChild(buildDetailRow(account));
+        }
+      }
+    }
+
+    // 该行当前的任务（运行中或排队中）；没有则 null
+    function rowTask(account) {
+      if (!queue) { return null; }
+      if (queue.running && queue.running.targetKey === account.shortcutPath) { return queue.running; }
+      const waiting = queue.waiting || [];
+      for (const task of waiting) {
+        if (task.targetKey === account.shortcutPath) { return task; }
+      }
+      return null;
+    }
+
+    // 是否有全量任务压着（* 表示影响所有行）
+    function isGlobalBusy() {
+      if (!queue) { return false; }
+      if (queue.running && queue.running.targetKey === "*") { return true; }
+      const waiting = queue.waiting || [];
+      for (const task of waiting) {
+        if (task.targetKey === "*") { return true; }
+      }
+      return false;
+    }
+
+    // 「上次获取算力时间 / 推测剩余 / 刷新倒计时」——分钟数按本机当前时间实时算
+    function parseStamp(text) {
+      if (!text || text.length < 19) { return null; }
+      const parts = text.split(/[- :]/);
+      if (parts.length < 6) { return null; }
+      const at = new Date(
+        parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10),
+        parseInt(parts[3], 10), parseInt(parts[4], 10), parseInt(parts[5], 10));
+      const ms = at.getTime();
+      return isNaN(ms) ? null : ms;
+    }
+
+    // 前缀：获取时间 + 推测剩余（本笔算力额度 − 自获取以来的花费，负数按 0）
+    function gainPrefix(account) {
+      if (!account.coinGainTime) { return ""; }
+      let text = "上次获取算力时间 " + account.coinGainTime;
+      const amount = account.coinGainAmount;
+      if (amount !== null && amount !== undefined) {
+        const spent = (account.coinSpent === null || account.coinSpent === undefined) ? 0 : account.coinSpent;
+        let remain = amount - spent;
+        if (remain < 0) { remain = 0; }
+        text = text + "，推测剩余 " + remain;
+      }
+      return text;
+    }
+
+    // 后缀：距离刷新（到期）还有多少分钟——取本机真实时间
+    function gainSuffix(refreshAt) {
+      if (!refreshAt) { return ""; }
+      const minutes = Math.round((refreshAt - Date.now()) / 60000);
+      if (minutes <= 0) { return "，刷新时间已到"; }
+      return "，刷新在 " + minutes + " 分钟后";
+    }
+
+    // 倒计时随时间走——只改文本，不重建表格
+    function refreshGainLines() {
+      const nodes = document.querySelectorAll(".gain-line");
+      for (const el of nodes) {
+        const prefix = el.getAttribute("data-prefix") || "";
+        if (!prefix) { continue; }
+        const at = parseInt(el.getAttribute("data-at") || "", 10);
+        el.textContent = prefix + gainSuffix(isNaN(at) ? null : at);
+      }
+    }
+
+    function buildRow(account, currentName) {
+      const ok = account.status === "ok";
+      const task = rowTask(account);
+      const globalBusy = isGlobalBusy();
+      const active = (currentName && account.shortcutName === currentName) || !!task;
+
+      const tr = document.createElement("tr");
+      tr.className = active ? "row-active" : (ok ? "row-ok" : "row-bad");
+
+      tr.ondragover = (e) => { e.preventDefault(); tr.classList.add("drop-hover"); };
+      tr.ondragleave = () => tr.classList.remove("drop-hover");
+      tr.ondrop = (e) => {
+        e.preventDefault();
+        tr.classList.remove("drop-hover");
+        const filePath = e.dataTransfer.getData("text/plain");
+        if (filePath) {
+          uploadTo(account, filePath);
+        }
+      };
+
+      tr.onclick = (e) => {
+        if (e.target.closest("button") || e.target.closest(".tag-click")) { return; }
+        toggleExpanded(account.shortcutPath);
+      };
+
+      const statusCell = document.createElement("td");
+      const tag = document.createElement("span");
+      if (task) {
+        tag.className = "tag tag-busy";
+        tag.textContent = task.state === "running" ? "处理中" : "排队中";
+        tag.title = task.label;
+      } else if (currentName && account.shortcutName === currentName) {
+        tag.className = "tag tag-busy";
+        tag.textContent = "采集中";
+      } else if (ok) {
+        // 绿行标签可点——直接打开该账号的工作台
+        tag.className = "tag tag-ok tag-click";
+        tag.textContent = STATUS_TEXT[account.status] || "已登录";
+        tag.title = "点击打开工作台";
+        tag.onclick = () => openUrl(account.shortcutPath, workspaceUrl, null);
+      } else {
+        tag.className = "tag tag-bad";
+        tag.textContent = STATUS_TEXT[account.status] || account.status || "未知";
+      }
+      statusCell.appendChild(tag);
+      tr.appendChild(statusCell);
+
+      tr.appendChild(cell(account.shortcutName || "(未命名)"));
+
+      const profile = cell(shortName(account.profileDir));
+      profile.className = "path";
+      profile.title = account.profileDir || "";
+      tr.appendChild(profile);
+
+      const who = cell(ok ? (account.mobile || account.nickName || "—") : "—");
+      if (ok && account.nickName) {
+        who.title = account.nickName + " / " + account.userId;
+      }
+      tr.appendChild(who);
+
+      // API 密钥列——只展示前 4 位；取不到就是「—」，取值状态不额外着色
+      const apiKey = account.apiKey || "";
+      const keyCell = cell(apiKey.length > 4 ? (apiKey.slice(0, 4) + "…") : (apiKey.length > 0 ? apiKey : "—"));
+      keyCell.className = "path";
+      keyCell.title = apiKey.length > 0 ? "API 密钥已采集（面板只显示前 4 位）" : "未取到 API 密钥";
+      tr.appendChild(keyCell);
+
+      const coin = cell((account.totalCoin === null || account.totalCoin === undefined) ? "—" : account.totalCoin);
+      coin.className = "coin";
+      tr.appendChild(coin);
+
+      tr.appendChild(buildWorkflowCell(account));
+
+      const note = document.createElement("td");
+      if (ok) {
+        const stamp = document.createElement("span");
+        stamp.className = "path";
+        stamp.textContent = account.collectedAt ? ("采集于 " + account.collectedAt) : "";
+        note.appendChild(stamp);
+
+        const prefix = gainPrefix(account);
+        if (prefix) {
+          const gain = document.createElement("div");
+          gain.className = "gain-line";
+          gain.setAttribute("data-prefix", prefix);
+          const at = parseStamp(account.coinRefreshTime);
+          gain.setAttribute("data-at", at === null ? "" : String(at));
+          gain.textContent = prefix + gainSuffix(at);
+          note.appendChild(gain);
+        }
+      } else {
+        const reason = document.createElement("div");
+        reason.className = "reason";
+        reason.textContent = account.error || "无余额";
+        note.appendChild(reason);
+      }
+      tr.appendChild(note);
+
+      const actions = document.createElement("td");
+      const box = document.createElement("div");
+      box.className = "actions";
+
+      const refresh = document.createElement("button");
+      refresh.className = "btn-refresh";
+      refresh.textContent = "刷新";
+      refresh.disabled = !!task || globalBusy;
+      refresh.onclick = () => refreshOne(account.shortcutPath, refresh);
+      box.appendChild(refresh);
+
+      if (!ok) {
+        const open = document.createElement("button");
+        open.className = "btn-open";
+        open.textContent = "打开登录";
+        open.disabled = !!task;
+        open.onclick = () => openShortcut(account.shortcutPath, open);
+        box.appendChild(open);
+      }
+
+      if (account.status === "running") {
+        const take = document.createElement("button");
+        take.className = "btn-mini";
+        take.textContent = "接管";
+        take.title = "结束该账号已打开的浏览器，改由面板接管（会关掉你看的那个窗口）";
+        take.disabled = !!task;
+        take.onclick = () => takeover(account, take);
+        box.appendChild(take);
+      }
+
+      actions.appendChild(box);
+      tr.appendChild(actions);
+
+      return tr;
+    }
+
+    function toggleExpanded(shortcutPath) {
+      if (expanded.has(shortcutPath)) {
+        expanded.delete(shortcutPath);
+      } else {
+        expanded.add(shortcutPath);
+      }
+      loadAccounts();
+    }
+
+    function buildWorkflowCell(account) {
+      const td = document.createElement("td");
+      const list = account.workflows || [];
+      const count = list.length;
+
+      const btn = document.createElement("button");
+      btn.className = "btn-wf";
+      btn.textContent = count > 0 ? (count + " 个") : "—";
+      btn.disabled = count === 0;
+      btn.title = count > 0 ? "点击展开工作流列表" : (account.workflowError || "暂无工作流");
+      btn.onclick = () => toggleExpanded(account.shortcutPath);
+      td.appendChild(btn);
+
+      if (count > 0 && expanded.has(account.shortcutPath)) {
+        const mark = document.createElement("span");
+        mark.className = "path";
+        mark.textContent = " ▾";
+        td.appendChild(mark);
+      }
+
+      return td;
+    }
+
+    function buildDetailRow(account) {
+      const tr = document.createElement("tr");
+      tr.className = "detail-row";
+
+      const td = document.createElement("td");
+      td.colSpan = 9;
+
+      const list = account.workflows || [];
+      if (list.length === 0) {
+        const note = document.createElement("div");
+        note.className = "wf-note";
+        note.textContent = account.workflowError || "该账号暂无工作流";
+        td.appendChild(note);
+        tr.appendChild(td);
+        return tr;
+      }
+
+      const table = document.createElement("table");
+      table.className = "wf";
+
+      const head = document.createElement("tr");
+      head.appendChild(th("工作流名称"));
+      head.appendChild(th("最后更新"));
+      head.appendChild(th("操作"));
+      table.appendChild(head);
+
+      for (const wf of list) {
+        const row = document.createElement("tr");
+        row.appendChild(tdText(wf.name || "(未命名)"));
+
+        const time = tdText(wf.lastUpdateTime || "—");
+        time.className = "path";
+        row.appendChild(time);
+
+        const op = document.createElement("td");
+        const box = document.createElement("div");
+        box.className = "actions";
+
+        const openBtn = document.createElement("button");
+        openBtn.className = "btn-wf";
+        openBtn.textContent = "打开";
+        openBtn.title = wf.editUrl || "";
+        openBtn.onclick = () => openUrl(account.shortcutPath, wf.editUrl, openBtn);
+        box.appendChild(openBtn);
+
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn-del";
+        delBtn.textContent = "删除";
+        delBtn.disabled = !!rowTask(account);
+        delBtn.onclick = () => deleteWorkflow(account, wf, delBtn);
+        box.appendChild(delBtn);
+
+        op.appendChild(box);
+        row.appendChild(op);
+
+        table.appendChild(row);
+      }
+
+      td.appendChild(table);
+      tr.appendChild(td);
+      return tr;
+    }
+
+    function th(text) {
+      const el = document.createElement("th");
+      el.textContent = text;
+      return el;
+    }
+
+    function tdText(text) {
+      const el = document.createElement("td");
+      el.textContent = text;
+      return el;
+    }
+
+    function cell(text) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    }
+
+    function shortName(dir) {
+      if (!dir) return "(未解析)";
+      const parts = dir.split("\\");
+      return parts.length >= 2 ? parts[parts.length - 2] + "\\" + parts[parts.length - 1] : dir;
+    }
+
+    async function openShortcut(path, btn) {
+      if (!path) { toast("该行没有可用的快捷方式路径"); return; }
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/open", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shortcutPath: path })
+        });
+        const data = await res.json();
+        if (!data.ok) { toast("打开失败：" + (data.error || res.status)); }
+      } catch (e) {
+        toast("打开失败：" + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function openUrl(shortcutPath, url, btn) {
+      if (!url) { toast("该工作流没有可跳转地址"); return; }
+      if (btn) { btn.disabled = true; }
+      try {
+        const res = await fetch("/api/open-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shortcutPath: shortcutPath, url: url })
+        });
+        const data = await res.json();
+        if (!data.ok) { toast("打开失败：" + (data.error || res.status)); }
+      } catch (e) {
+        toast("打开失败：" + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function deleteWorkflow(account, wf, btn) {
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/workflow/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shortcutPath: account.shortcutPath, workflowId: wf.workflowId, name: wf.name })
+        });
+        const data = await res.json();
+        if (!data.queued) {
+          toast("删除未入队：" + (data.reason || res.status));
+          btn.disabled = false;
+          return;
+        }
+        toast("已入队：" + (wf.name || wf.workflowId));
+        await loadTasks();
+      } catch (e) {
+        toast("删除请求失败：" + e.message);
+        btn.disabled = false;
+      }
+    }
+
+    async function uploadTo(account, filePath) {
+      if (account.status !== "ok") {
+        toast("该账号未登录，先「打开登录」再上传");
+        return;
+      }
+
+      const fileName = filePath.split("\\").pop();
+      toast("已入队：上传 " + fileName);
+
+      try {
+        const res = await fetch("/api/workflow/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shortcutPath: account.shortcutPath, filePath: filePath })
+        });
+        const data = await res.json();
+        if (!data.queued) {
+          toast("上传未入队：" + (data.reason || res.status));
+          return;
+        }
+        await loadTasks();
+      } catch (e) {
+        toast("上传请求失败：" + e.message);
+      }
+    }
+
+    async function openUploaded(shortcutPath, workflowName) {
+      for (let i = 0; i < 10; i++) {
+        const snapshot = await fetch("/api/accounts").then(r => r.json());
+        const account = (snapshot.accounts || []).find(a => a.shortcutPath === shortcutPath);
+        const wf = account && (account.workflows || []).find(w => w.name === workflowName);
+        if (wf) {
+          await openUrl(shortcutPath, wf.editUrl, null);
+          toast("已打开：" + wf.name);
+          return;
+        }
+        await sleep(1500);
+      }
+      toast("上传完成，但没在列表里找到同名工作流（可手动点「打开」）");
+    }
+
+    async function refreshOne(path, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        const res = await fetch("/api/collect/one", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shortcutPath: path })
+        });
+        const data = await res.json();
+        if (!data.queued) {
+          toast(data.reason || "未能入队");
+          if (btn) { btn.disabled = false; }
+          return;
+        }
+        await loadTasks();
+      } catch (e) {
+        toast("请求失败：" + e.message);
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    let localRunning = false;
+
+    async function loadLocalComfy() {
+      try {
+        const data = await fetch("/api/local-comfy").then(r => r.json());
+        applyLocalState(data.running);
+      } catch (e) {
+        applyLocalState(false);
+      }
+    }
+
+    function applyLocalState(running) {
+      localRunning = running;
+      const btn = document.getElementById("localBtn");
+      btn.classList.remove("state-ok", "state-bad", "state-busy");
+      if (running) {
+        btn.classList.add("state-ok");
+        btn.textContent = "本地 ComfyUI：运行中";
+        btn.title = "点击打开本地界面";
+      } else {
+        btn.classList.add("state-bad");
+        btn.textContent = "本地 ComfyUI：未运行";
+        btn.title = "点击启动本地 ComfyUI 并打开界面";
+      }
+    }
+
+    async function toggleLocalComfy() {
+      const btn = document.getElementById("localBtn");
+      btn.classList.remove("state-ok", "state-bad");
+      btn.classList.add("state-busy");
+
+      if (localRunning) {
+        btn.textContent = "本地 ComfyUI：打开中…";
+      } else {
+        btn.textContent = "本地 ComfyUI：启动中…";
+        toast("正在启动本地 ComfyUI，模型加载可能要等一会儿…");
+      }
+
+      try {
+        const data = await fetch("/api/local-comfy/start", { method: "POST" }).then(r => r.json());
+        applyLocalState(data.running);
+        toast(data.running ? (data.message || "本地 ComfyUI 已就绪") : (data.message || "本地 ComfyUI 未就绪"));
+      } catch (e) {
+        applyLocalState(false);
+        toast("本地 ComfyUI 操作失败：" + e.message);
+      }
+    }
+
+    async function startCollect() {
+      const btn = document.getElementById("collectBtn");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/collect", { method: "POST" });
+        const data = await res.json();
+        if (!data.queued) {
+          toast(data.reason || "未能入队");
+          btn.disabled = false;
+          return;
+        }
+        toast("已入队：全量采集");
+        await loadTasks();
+        btn.disabled = false;
+      } catch (e) {
+        toast("启动失败：" + e.message);
+        btn.disabled = false;
+      }
+    }
+
+    async function takeover(account, btn) {
+      btn.disabled = true;
+      toast("接管中：将关闭该账号已打开的浏览器…");
+      try {
+        const res = await fetch("/api/browser/takeover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shortcutPath: account.shortcutPath, url: workspaceUrl })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          toast("接管失败：" + (data.error || res.status));
+          return;
+        }
+        toast("已接管——面板现在可以控制这个窗口");
+        await loadAccounts();
+      } catch (e) {
+        toast("接管失败：" + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadTasks() {
+      try {
+        queue = await fetch("/api/tasks").then(r => r.json());
+      } catch (e) {
+        return;
+      }
+
+      handleTaskResults();
+      renderProgress(lastProgress);
+      await loadAccounts();
+    }
+
+    function handleTaskResults() {
+      if (!queue || !queue.recent) { return; }
+
+      let maxId = 0;
+      for (const task of queue.recent) {
+        if (task.id > maxId) { maxId = task.id; }
+      }
+
+      if (!taskBaseline) {
+        taskBaseline = true;
+        lastTaskId = maxId;
+        return;
+      }
+
+      const fresh = queue.recent.filter(t => t.id > lastTaskId).sort((a, b) => a.id - b.id);
+      if (fresh.length === 0) { return; }
+
+      lastTaskId = maxId;
+
+      for (const task of fresh) {
+        toast((task.state === "done" ? "✅ " : "❌ ") + (task.message || task.label));
+
+        if (task.kind === "upload" && task.state === "done") {
+          const name = task.label.replace(/^上传 /, "").replace(/\.json$/i, "");
+          pendingOpen = { shortcutPath: task.targetKey, name: name };
+          refreshOne(task.targetKey, null);
+        } else if (task.kind === "collect-one" && task.state === "done" && pendingOpen && pendingOpen.shortcutPath === task.targetKey) {
+          const target = pendingOpen;
+          pendingOpen = null;
+          openUploaded(target.shortcutPath, target.name);
+        }
+      }
+    }
+
+    function beginPolling() {
+      if (pollTimer) { return; }
+      pollTimer = setInterval(tick, 2000);
+      tick();
+    }
+
+    async function tick() {
+      try {
+        lastProgress = await fetch("/api/collect/status").then(r => r.json());
+      } catch (e) {
+        return;
+      }
+
+      try {
+        queue = await fetch("/api/tasks").then(r => r.json());
+        handleTaskResults();
+      } catch (e) { /* 队列面失败不阻断面板 */ }
+
+      renderProgress(lastProgress);
+      await loadAccounts();
+
+      if (cap === "rh") { await loadRh(); }
+    }
+
+    function renderProgress(st) {
+      const label = document.getElementById("progress");
+      const bar = document.getElementById("bar");
+      const running = (queue && queue.running) ? queue.running : null;
+      const waitingCount = (queue && queue.waiting) ? queue.waiting.length : 0;
+
+      if (running || (st && st.running)) {
+        label.classList.add("busy");
+
+        let text = "";
+        if (running) { text = running.label; }
+        else { text = "采集中"; }
+
+        if (st && st.running && st.total > 0) {
+          text += " " + st.done + "/" + st.total;
+          bar.style.width = Math.round(st.done / st.total * 100) + "%";
+        } else {
+          bar.style.width = "100%";
+        }
+
+        if (waitingCount > 0) { text += " · 排队 " + waitingCount; }
+        label.textContent = text;
+        return;
+      }
+
+      label.classList.remove("busy");
+      bar.style.width = "0%";
+
+      if (waitingCount > 0) {
+        label.textContent = "排队 " + waitingCount;
+        return;
+      }
+
+      if (st && st.finishedAt) {
+        label.textContent = "空闲 · 上次 " + st.finishedAt;
+        return;
+      }
+
+      label.textContent = "空闲";
+    }
+
+    async function restartApp() {
+      if (!window.confirm("重启 ComfyDock？正在进行的采集 / 上传会被中断。")) { return; }
+
+      const btn = document.getElementById("restartBtn");
+      btn.disabled = true;
+      toast("正在重启…");
+
+      try {
+        const data = await fetch("/api/app/restart", { method: "POST" }).then(r => r.json());
+        if (!data.ok) {
+          toast("重启失败：" + (data.error || "未知原因"));
+          btn.disabled = false;
+          return;
+        }
+      } catch (e) {
+        toast("重启失败：" + e.message);
+        btn.disabled = false;
+        return;
+      }
+
+      await waitForRestart();
+    }
+
+    async function waitForRestart() {
+      const btn = document.getElementById("restartBtn");
+      const deadline = Date.now() + 30000;
+
+      await sleep(1500);
+
+      while (Date.now() < deadline) {
+        try {
+          const res = await fetch("/api/options", { cache: "no-store" });
+          if (res.ok) {
+            toast("面板已重启，正在刷新…");
+            location.reload();
+            return;
+          }
+        } catch (e) { /* 服务还没回来——继续等 */ }
+
+        await sleep(600);
+      }
+
+      toast("等待超时——请手动刷新本页");
+      btn.disabled = false;
+    }
+
+    async function shutdownApp() {
+      if (!window.confirm("关闭 ComfyDock？只关本程序，浏览器窗口不受影响。")) { return; }
+
+      const btn = document.getElementById("closeBtn");
+      btn.disabled = true;
+      toast("正在关闭…");
+
+      try {
+        await fetch("/api/app/shutdown", { method: "POST" });
+      } catch (e) { /* 进程可能已退出，忽略 */ }
+
+      const label = document.getElementById("progress");
+      label.classList.remove("busy");
+      label.textContent = "面板已关闭——可以直接关掉本页";
+      toast("面板已关闭");
+    }
+
+    // ---- 能力板块：本地工作流 / 线上识别（与本地工作流平行，可切换）----
+
+    const CAP_KEY = "comfydock.cap";
+    let rhData = null;
+    let cap = loadCap();
+
+    function loadCap() {
+      try {
+        const saved = window.localStorage.getItem(CAP_KEY);
+        if (saved === "rh" || saved === "local") { return saved; }
+      } catch (e) { /* 本地存储不可用——用默认 */ }
+      return "local";
+    }
+
+    function applyCap() {
+      document.getElementById("capLocal").style.display = cap === "local" ? "block" : "none";
+      document.getElementById("capRh").style.display = cap === "rh" ? "block" : "none";
+      document.getElementById("capTabLocal").classList.toggle("on", cap === "local");
+      document.getElementById("capTabRh").classList.toggle("on", cap === "rh");
+      document.getElementById("capHint").textContent = cap === "local" ? "本地 ComfyUI 工作流" : "RunningHub 线上识别";
+      try { window.localStorage.setItem(CAP_KEY, cap); } catch (e) { /* 忽略 */ }
+      if (cap === "rh") { loadRh(); }
+    }
+
+    function setCap(next) {
+      cap = next;
+      applyCap();
+    }
+
+    async function loadRh() {
+      try {
+        rhData = await fetch("/api/rh", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        rhData = null;
+      }
+      renderRh();
+    }
+
+    function rhText(value) {
+      if (value === null || value === undefined) { return ""; }
+      return String(value).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    }
+
+    function rhFileName(path) {
+      const parts = String(path || "").split("\\");
+      return parts[parts.length - 1];
+    }
+
+    // 工作区折叠态记忆（与本地工作流面同一套口径：浏览器本地存储）
+    const WS_KEY = "comfydock.rhPanel";
+    let wsCollapsed = loadWsState();
+
+    function loadWsState() {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(WS_KEY) || "{}");
+        if (saved && saved.collapsed) { return saved.collapsed; }
+      } catch (e) { /* 本地存储不可用——用默认 */ }
+      return [];
+    }
+
+    function saveWsState() {
+      try { window.localStorage.setItem(WS_KEY, JSON.stringify({ collapsed: wsCollapsed })); } catch (e) { /* 忽略 */ }
+    }
+
+    function wsIsCollapsed(id) { return wsCollapsed.indexOf(id) >= 0; }
+
+    function toggleWs(id) {
+      const at = wsCollapsed.indexOf(id);
+      if (at >= 0) { wsCollapsed.splice(at, 1); } else { wsCollapsed.push(id); }
+      saveWsState();
+      renderRh();
+    }
+
+    function renderRh() {
+      const wsBox = document.getElementById("rhWorkspaces");
+      const accBox = document.getElementById("rhAccounts");
+      const eventBox = document.getElementById("rhEvents");
+
+      if (!rhData) {
+        wsBox.innerHTML = '<div class="rh-item rh-bad">状态读不到——后端没起来？</div>';
+        accBox.innerHTML = "";
+        eventBox.innerHTML = "";
+        return;
+      }
+
+      document.getElementById("rhOut").textContent = "产物落点：" + (rhData.outDir || "—");
+
+      // [段1] 工作区折叠块——每块一条云端工作流，音频源与任务各归各块
+      const workspaces = rhData.workspaces || [];
+      wsBox.innerHTML = workspaces.length
+        ? workspaces.map(w => renderOneWs(w)).join("")
+        : '<div class="rh-item rh-dim">还没有工作区——点上方「新增工作区」加一块。</div>';
+
+      // [段2] 账号表（各工作区共用同一张池）
+      const accounts = rhData.accounts || [];
+      const usable = accounts.filter(a => a.usable).length;
+      document.getElementById("rhAccountHead").textContent =
+        "账号（复用主表 · 可用 " + usable + "/" + accounts.length + " · 不显示密钥）";
+      accBox.innerHTML = accounts.length
+        ? accounts.map(a => '<div class="rh-item"><span class="grow">' + rhText(a.account)
+            + (a.nickName ? " · " + rhText(a.nickName) : "") + "</span>"
+            + '<span class="' + (a.usable ? "" : "rh-dim") + '">推测剩余 '
+            + (a.remain === null || a.remain === undefined ? "—" : a.remain) + "</span>"
+            + '<span class="' + (a.usable ? "rh-dim" : "rh-bad") + '">' + rhText(a.note) + "</span></div>").join("")
+        : '<div class="rh-item rh-dim">还没有账号数据——先回主表「全量采集」。</div>';
+
+      // [段3] 最近事件
+      const events = rhData.events || [];
+      eventBox.innerHTML = events.length
+        ? events.map(e => '<div class="rh-item"><span class="grow">' + rhText(e) + "</span></div>").join("")
+        : '<div class="rh-item rh-dim">还没有事件。</div>';
+    }
+
+    function renderOneWs(w) {
+      const collapsed = wsIsCollapsed(w.id);
+      const flow = w.workflowId || "（未填工作流 id）";
+
+      let html = '<div class="ws">';
+
+      // 组头即折叠开关——点击收起 / 展开（点击由容器统一委托）
+      html += '<div class="ws-head" data-ws-toggle="' + rhText(w.id) + '" title="' + (collapsed ? "点击展开" : "点击折叠") + '">'
+        + '<span class="ws-fold">' + (collapsed ? "▸" : "▾") + '</span>'
+        + '<span class="ws-name">' + rhText(w.name) + "</span>"
+        + '<span class="ws-flow">工作流 ' + rhText(flow) + "</span>"
+        + '<span class="spacer"></span>'
+        + '<span class="rh-dim">任务 ' + (w.tasks || []).length + "</span>"
+        + (w.builtIn ? "" : '<button class="btn-mini danger" data-ws-remove="' + rhText(w.id) + '">删除</button>')
+        + "</div>";
+
+      if (collapsed) {
+        return html + "</div>";
+      }
+
+      html += '<div class="ws-body">';
+
+      // 工作流 id 可就地改（预留块先占位后填）
+      html += '<div class="ws-flow-edit">'
+        + '<span class="rh-dim">工作流 id</span>'
+        + '<input type="text" value="' + rhText(w.workflowId) + '" data-ws-flow="' + rhText(w.id) + '" placeholder="填云端工作流 id">'
+        + '<button class="btn-mini" data-ws-save="' + rhText(w.id) + '">保存</button>'
+        + "</div>";
+
+      // [段1] 输入面——按工作区类型分流（gen = 图 + 文；asr = 音频源 + 目录监听）
+      if (w.kind === "gen") {
+        const img = w.imageFile || "";
+        html += '<div class="sub-head">'
+          + '<button class="btn-mini" data-ws-pick-image="' + rhText(w.id) + '">选择图片</button>'
+          + '<button class="btn-mini" data-ws-submit-gen="' + rhText(w.id) + '">提交生成</button>'
+          + "</div>";
+
+        html += '<div class="rh-src">' + (img ? "图片：" + rhText(img) : "未选图片") + "</div>";
+
+        html += '<div class="ws-block"><h5>提示词</h5>'
+          + '<textarea class="ws-prompt" rows="3" data-ws-prompt="' + rhText(w.id)
+          + '" placeholder="要改成什么样…">' + rhText(w.prompt) + "</textarea></div>";
+      } else {
+        let src = "未选音频 / 目录";
+        if (w.audioFile) { src = "音频：" + w.audioFile; }
+        else if (w.audioDir) { src = "目录：" + w.audioDir; }
+
+        html += '<div class="sub-head">'
+          + '<button class="btn-mini" data-ws-pick-file="' + rhText(w.id) + '">选择音频</button>'
+          + '<button class="btn-mini" data-ws-pick-dir="' + rhText(w.id) + '">选择目录</button>'
+          + '<span class="tag-auto' + (w.autoPush ? " on" : "") + '" data-ws-auto="' + rhText(w.id)
+          + '" title="默认关；点亮后该工作区目录里新出现的音频自动提交">目录监听自动推：' + (w.autoPush ? "开" : "关") + "</span>"
+          + "</div>";
+
+        html += '<div class="rh-src">' + rhText(src) + "</div>";
+
+        // 音频清单
+        const files = w.audioFiles || [];
+        html += '<div class="ws-block"><h5>音频清单（' + files.length + "）</h5><div class=\"rh-list\">"
+          + (files.length
+            ? files.map(f => '<div class="rh-item"><span class="grow" title="' + rhText(f) + '">'
+                + rhText(rhFileName(f)) + '</span><button class="btn-mini" data-ws-submit="' + rhText(w.id)
+                + '" data-ws-path="' + rhText(f) + '">提交</button></div>').join("")
+            : '<div class="rh-item rh-dim">没有待提交的音频——先「选择音频」或「选择目录」。</div>')
+          + "</div></div>";
+      }
+
+      // [段2] 该工作区的任务（两类共用）
+      const tasks = w.tasks || [];
+      html += '<div class="ws-block"><h5>任务（' + tasks.length + "）</h5><div class=\"rh-list\">"
+        + (tasks.length
+          ? tasks.map(t => {
+              const done = t.status === "SUCCESS" || t.status === "FAILED" || t.status === "CANCELED";
+              return '<div class="rh-item"><span class="grow" title="' + rhText(t.id) + '">' + rhText(t.name) + "</span>"
+                + "<span>" + rhText(t.status) + "</span>"
+                + '<span class="rh-dim">' + rhText(t.account) + "</span>"
+                + '<span class="rh-dim">' + (t.coins ? t.coins + " 币" : "") + "</span>"
+                + '<span class="rh-dim">' + rhText((t.artifacts || []).join(" / ")) + "</span>"
+                + (t.error ? '<span class="rh-bad">' + rhText(t.error) + "</span>" : "")
+                + (done ? "" : '<button class="btn-mini" data-ws-cancel="' + rhText(t.id) + '">取消</button>')
+                + "</div>";
+            }).join("")
+          : '<div class="rh-item rh-dim">还没有任务。</div>')
+        + "</div></div>";
+
+      return html + "</div></div>";
+    }
+
+    async function rhPost(url, body) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body || {})
+        });
+        return await res.json();
+      } catch (e) {
+        toast("请求失败：" + e.message);
+        return null;
+      }
+    }
+
+    async function wsPick(workspaceId, kind) {
+      const labels = { dir: "目录", file: "音频", image: "图片" };
+      toast("等系统对话框选" + (labels[kind] || "文件") + "…");
+      const data = await rhPost("/api/rh/pick", { kind: kind });
+      if (!data || !data.ok) { toast("选择失败：" + ((data && data.error) || "未知")); return; }
+      if (!data.path) { toast("没有选东西"); return; }
+
+      const body = { workspaceId: workspaceId };
+      if (kind === "dir") { body.audioDir = data.path; }
+      else if (kind === "image") { body.imageFile = data.path; }
+      else { body.audioFile = data.path; }
+      const saved = await rhPost("/api/rh/config", body);
+      if (!saved || !saved.ok) { toast("保存失败：" + ((saved && saved.error) || "未知")); return; }
+      toast("已选：" + data.path);
+      await loadRh();
+    }
+
+    async function wsToggleAuto(workspaceId) {
+      const list = (rhData && rhData.workspaces) || [];
+      let current = false;
+      for (const w of list) { if (w.id === workspaceId) { current = !!w.autoPush; } }
+
+      const data = await rhPost("/api/rh/config", { workspaceId: workspaceId, autoPush: !current });
+      if (!data || !data.ok) { toast("开关失败：" + ((data && data.error) || "未知")); return; }
+      toast(!current ? "自动推已开——该工作区目录里新音频会自动提交" : "自动推已关");
+      await loadRh();
+    }
+
+    async function wsSaveFlow(workspaceId) {
+      const input = document.querySelector('[data-ws-flow="' + workspaceId + '"]');
+      if (!input) { return; }
+
+      const data = await rhPost("/api/rh/config", { workspaceId: workspaceId, workflowId: input.value.trim() });
+      if (!data || !data.ok) { toast("保存失败：" + ((data && data.error) || "未知")); return; }
+      toast("工作流 id 已保存");
+      await loadRh();
+    }
+
+    async function wsSubmit(workspaceId, path) {
+      const data = await rhPost("/api/rh/submit", { workspaceId: workspaceId, path: path });
+      if (!data) { return; }
+      toast(data.ok ? ("✅ " + (data.message || "已提交")) : ("❌ " + (data.message || "提交失败")));
+      await loadRh();
+    }
+
+    // 生成块提交——提示词先落配置（下次打开还在），再连同工作区一起提交
+    async function wsSubmitGen(workspaceId) {
+      const box = document.querySelector('[data-ws-prompt="' + workspaceId + '"]');
+      const prompt = box ? box.value.trim() : "";
+      if (!prompt) { toast("提示词是空的——生成要一段文字"); return; }
+
+      const saved = await rhPost("/api/rh/config", { workspaceId: workspaceId, prompt: prompt });
+      if (!saved || !saved.ok) { toast("提示词保存失败：" + ((saved && saved.error) || "未知")); return; }
+
+      const data = await rhPost("/api/rh/submit", { workspaceId: workspaceId, prompt: prompt });
+      if (!data) { return; }
+      toast(data.ok ? ("✅ " + (data.message || "已提交")) : ("❌ " + (data.message || "提交失败")));
+      await loadRh();
+    }
+
+    async function wsCancel(id) {
+      const data = await rhPost("/api/rh/cancel", { id: id });
+      if (!data) { return; }
+      toast(data.message || "已取消");
+      await loadRh();
+    }
+
+    async function wsAdd() {
+      const name = window.prompt("新工作区名（后续可改显示名与工作流 id）：", "新工作区");
+      if (name === null) { return; }
+      if (!name.trim()) { toast("工作区名不能为空"); return; }
+
+      const data = await rhPost("/api/rh/workspace/add", { name: name.trim(), workflowId: "" });
+      if (!data || !data.ok) { toast("新增失败：" + ((data && data.error) || "未知")); return; }
+      toast("已新增工作区「" + name.trim() + "」——点开填工作流 id");
+      await loadRh();
+    }
+
+    async function wsRemove(workspaceId) {
+      const list = (rhData && rhData.workspaces) || [];
+      let name = workspaceId;
+      for (const w of list) { if (w.id === workspaceId) { name = w.name; } }
+
+      if (!window.confirm("删除工作区「" + name + "」？它名下的任务记录一并清掉。")) { return; }
+
+      const data = await rhPost("/api/rh/workspace/remove", { workspaceId: workspaceId });
+      if (!data) { return; }
+      toast(data.ok ? ("✅ " + (data.message || "已删除")) : ("❌ " + (data.message || "删除失败")));
+      await loadRh();
+    }
+
+    document.getElementById("capTabLocal").onclick = () => setCap("local");
+    document.getElementById("capTabRh").onclick = () => setCap("rh");
+    document.getElementById("rhAdd").onclick = wsAdd;
+
+    // 工作区面——事件委托挂在容器上：区块重建后绑定依然有效
+    document.getElementById("rhWorkspaces").onclick = (e) => {
+      const head = e.target.closest("[data-ws-toggle]");
+      if (head) { toggleWs(head.getAttribute("data-ws-toggle")); return; }
+
+      const pickFile = e.target.closest("[data-ws-pick-file]");
+      if (pickFile) { wsPick(pickFile.getAttribute("data-ws-pick-file"), "file"); return; }
+
+      const pickDir = e.target.closest("[data-ws-pick-dir]");
+      if (pickDir) { wsPick(pickDir.getAttribute("data-ws-pick-dir"), "dir"); return; }
+
+      const pickImage = e.target.closest("[data-ws-pick-image]");
+      if (pickImage) { wsPick(pickImage.getAttribute("data-ws-pick-image"), "image"); return; }
+
+      const submitGen = e.target.closest("[data-ws-submit-gen]");
+      if (submitGen) { wsSubmitGen(submitGen.getAttribute("data-ws-submit-gen")); return; }
+
+      const auto = e.target.closest("[data-ws-auto]");
+      if (auto) { wsToggleAuto(auto.getAttribute("data-ws-auto")); return; }
+
+      const save = e.target.closest("[data-ws-save]");
+      if (save) { wsSaveFlow(save.getAttribute("data-ws-save")); return; }
+
+      const submit = e.target.closest("[data-ws-submit]");
+      if (submit) {
+        wsSubmit(submit.getAttribute("data-ws-submit"), submit.getAttribute("data-ws-path"));
+        return;
+      }
+
+      const cancel = e.target.closest("[data-ws-cancel]");
+      if (cancel) { wsCancel(cancel.getAttribute("data-ws-cancel")); return; }
+
+      const remove = e.target.closest("[data-ws-remove]");
+      if (remove) { wsRemove(remove.getAttribute("data-ws-remove")); return; }
+    };
+
+    document.getElementById("collectBtn").onclick = startCollect;
+    document.getElementById("localBtn").onclick = toggleLocalComfy;
+    document.getElementById("localReload").onclick = loadLocal;
+
+    // 折叠开关——事件委托挂在列表容器上：列表重建后绑定依然有效
+    document.getElementById("localList").onclick = (e) => {
+      const head = e.target.closest(".group-head");
+      if (!head) { return; }
+      toggleFolder(head.getAttribute("data-dir") || "");
+    };
+    document.getElementById("localSort").onclick = sortLocal;
+    document.getElementById("restartBtn").onclick = restartApp;
+    document.getElementById("closeBtn").onclick = shutdownApp;
+
+    loadOptions();
+    loadVersion();
+    loadLocal();
+    loadLocalComfy();
+    loadAccounts();
+    loadTasks();
+    applyCap();
+    beginPolling();
+    window.setInterval(refreshGainLines, 30000);
+  </script>
+</body>
+
+</html>
