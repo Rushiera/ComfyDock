@@ -267,6 +267,43 @@
       width: 168px; height: 168px; object-fit: cover;
       border: 1px solid var(--line); border-radius: 8px; background: #fff;
     }
+
+    /* 本地生成：生成器页签（每个生成功能一个）+ 生成器内的子签（参数与出图 / 环境与依赖） */
+    .gen-tabs { display: flex; gap: 6px; margin: 2px 0 10px; flex-wrap: wrap; }
+
+    .gen-tab {
+      border: 1px solid var(--line); background: #fff; color: var(--ink);
+      border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+      display: flex; flex-direction: column; align-items: flex-start; line-height: 1.35;
+    }
+
+    .gen-tab.on { border-color: var(--brand); color: var(--brand); background: #f3f8ff; }
+
+    .gen-tab .gen-note { font-size: 11px; color: var(--dim); }
+
+    .gen-tab.on .gen-note { color: var(--brand); }
+
+    .sub-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+
+    .sub-tab {
+      border: none; background: none; padding: 6px 10px; font-size: 12px; cursor: pointer;
+      color: var(--dim); border-bottom: 2px solid transparent;
+    }
+
+    .sub-tab.on { color: var(--brand); border-bottom-color: var(--brand); }
+
+    /* 参数说明：默认折叠，点开逐条看效果 */
+    .moss-help { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+
+    .moss-help summary { cursor: pointer; font-size: 12px; color: var(--brand); }
+
+    .moss-help-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+
+    .moss-help-item { font-size: 12px; line-height: 1.65; color: var(--ink); }
+
+    .moss-help-item b { color: var(--ink); }
+
+    .moss-help-item em { color: var(--dim); font-style: normal; }
   </style>
 </head>
 
@@ -296,7 +333,7 @@
         <b>能力板块</b>
         <button class="cap-tab on" id="capTabLocal">本地工作流</button>
         <button class="cap-tab" id="capTabRh">线上识别</button>
-        <button class="cap-tab" id="capTabMoss">本地生成 · MOSS</button>
+        <button class="cap-tab" id="capTabMoss">本地生成</button>
         <span class="spacer"></span>
         <span class="path" id="capHint">—</span>
       </div>
@@ -334,78 +371,116 @@
       </div>
 
       <div id="capMoss" style="display:none">
-        <div class="sub-head">
-          <button class="btn-mini" id="mossReload">重新检测</button>
-          <button class="btn-mini" id="mossInstall" title="把 OpenMOSS/MOSS-Image 仓库里的 comfyui/moss-image 装进 custom_nodes">安装插件</button>
-          <button class="btn-mini" id="mossOpenOut">打开产物目录</button>
-          <span class="spacer"></span>
-          <span class="path" id="mossEnvLine">检测中…</span>
-        </div>
+        <!-- 本地生成：多个生成功能各占一个页签（MOSS-Image 是第一个，后续新增只往 LOCAL_GENS 加一项 + 一个面板） -->
+        <div class="gen-tabs" id="genTabs"></div>
 
-        <div class="rh-block">
-          <h4>环境（ComfyUI 内核 / 插件 / 显卡）</h4>
-          <div class="rh-list" id="mossEnv"></div>
-        </div>
-
-        <div class="rh-block">
-          <h4>依赖（软件只带索引，权重按需下载）</h4>
-          <div class="sub-head">
-            <button class="btn-mini" id="mossPlanDownload">一键下载推荐方案</button>
-            <span class="path" id="mossPlanHint">—</span>
+        <div id="genPanelMoss">
+          <div class="sub-tabs">
+            <button class="sub-tab on" data-moss-view="gen">参数与出图</button>
+            <button class="sub-tab" data-moss-view="env">环境与依赖</button>
           </div>
-          <div id="mossPlans"></div>
-          <div class="rh-list" id="mossDownloads"></div>
-        </div>
 
-        <div class="rh-block">
-          <h4>参数</h4>
-          <div class="moss-form">
-            <textarea id="mossPrompt" class="ws-prompt" placeholder="正向提示词：自然语言 / Danbooru 标签 / 官方 Layout JSON 都可以"></textarea>
-            <textarea id="mossNegative" class="ws-prompt" style="min-height:38px" placeholder="负向提示词（官方推荐留空）"></textarea>
-            <div class="moss-line">
-              <label>方案</label><select id="mossPlan" class="wide"></select>
-              <label>显存模式</label>
-              <select id="mossVramMode">
-                <option value="">沿用引擎当前</option>
-                <option value="normalvram">按需放进显卡</option>
-                <option value="lowvram">逐层搬运（最省显存）</option>
-                <option value="highvram">全部常驻显卡</option>
-              </select>
+          <div id="mossViewGen">
+            <div class="rh-block">
+              <h4>参数</h4>
+              <div class="moss-form">
+                <textarea id="mossPrompt" class="ws-prompt" title="想画什么。自然语言描述 / Danbooru 标签串 / 官方 Layout JSON 都可以直接粘进来（粘 JSON 时宽高必须和 JSON 画布一致）" placeholder="正向提示词：自然语言 / Danbooru 标签 / 官方 Layout JSON 都可以"></textarea>
+                <textarea id="mossNegative" class="ws-prompt" style="min-height:38px" title="不想出现的内容。官方推荐留空；CFG = 1（8 步加速）时它完全不生效" placeholder="负向提示词（官方推荐留空）"></textarea>
+                <div class="moss-line">
+                  <label title="决定用哪套权重：int8 省显存 / bf16 质量最好 / base 训 LoRA / diffusers 兜底">方案</label><select id="mossPlan" class="wide" title="int8 = 10–18 G 显存首选（峰值约 8.7 G）；bf16 = ≥18 G 才用（峰值约 15 G）；base = 训 LoRA 用，别配 8 步加速；diffusers = 官方目录版兜底（约 27 G）"></select>
+                  <label title="引擎启动参数，改完要点右边（环境与依赖里）的「按显存模式重启引擎」才生效">显存模式</label>
+                  <select id="mossVramMode" title="沿用引擎当前 = 不动它（推荐）；按需放进显卡 = 默认最快；逐层搬运 = 最省显存最慢；全部常驻 = ≥30 G 显存才用">
+                    <option value="">沿用引擎当前</option>
+                    <option value="normalvram">按需放进显卡</option>
+                    <option value="lowvram">逐层搬运（最省显存）</option>
+                    <option value="highvram">全部常驻显卡</option>
+                  </select>
+                </div>
+                <div class="moss-line">
+                  <label title="成图宽度，必须是 16 的倍数">宽</label><input type="number" id="mossWidth" step="16" min="256" max="2048" title="1024×1024 在 8 G 卡上 8 步约 30–60 秒；512 更快；2048 很慢且容易爆显存">
+                  <label title="成图高度，必须是 16 的倍数">高</label><input type="number" id="mossHeight" step="16" min="256" max="2048" title="与宽度同理；宽高不必相等（1024×1536 出竖图）">
+                  <label title="采样步数：官方 50；开了 8 步加速就填 8">步数</label><input type="number" id="mossSteps" min="1" max="100" title="官方口径 50；40 步几乎看不出差别；开 8 步加速（DMD）时填 8">
+                  <label title="提示词权重强度：官方 3；8 步加速必须 1">CFG</label><input type="number" id="mossCfg" step="0.1" min="0" max="20" title="调高更贴提示词但容易僵、颜色变死；调低更自由；8 步加速时必须是 1（此时负向提示词失效）">
+                  <label title="调度偏移，官方口径 5，一般不用改">Shift</label><input type="number" id="mossShift" step="0.1" min="0" max="20" title="官方口径 5；改了会整体改变画面明暗与结构倾向，不确定就别动">
+                </div>
+                <div class="moss-line">
+                  <label title="留空或 -1 = 每次随机；填数字 = 固定种子">种子</label><input type="number" id="mossSeed" step="1" placeholder="随机" title="留空或 -1 = 每次随机；填固定数字 = 同种子同图，便于复现与微调">
+                  <button class="btn-mini" id="mossSeedRandom" title="把种子设回随机（每次生成都不一样）">随机</button>
+                  <label title="一次出几张">批次</label><input type="number" id="mossBatch" min="1" max="8" title="一次出几张图（同一次采样出多张，显存与时间按张数增加）">
+                  <label title="额外挂的风格 LoRA（你自己的）">LoRA</label><select id="mossLora" class="wide" title="挂你自己的风格 / 角色 LoRA；8 步加速 LoRA 是内置的另一条，不受这里影响"></select>
+                  <label title="LoRA 强度">权重</label><input type="number" id="mossLoraStrength" step="0.05" min="0" max="2" title="0 = 不生效，1 = 原强度，>1 更浓（过头会糊 / 崩坏）">
+                </div>
+                <div class="moss-line rh-dim" style="font-size:11px">
+                  种子留空或填 -1 = 每次随机；填具体数字 = 固定种子（同种子同图，产物文件名就是种子）
+                </div>
+                <div class="moss-line">
+                  <label class="moss-chk" title="挂 DMD 蒸馏 LoRA，把 50 步压到 8 步；开了记得步数填 8、CFG 填 1"><input type="checkbox" id="mossAccel"> 8 步加速（DMD）</label>
+                  <label class="moss-chk" title="负向分支跳过第 22 层：手和结构更稳，代价是慢一点；官方推荐开"><input type="checkbox" id="mossSlg"> 结构增强（SLG 跳过 22 层）</label>
+                  <label class="moss-chk" title="先出小图再放大重绘一遍：更清晰但更慢更吃显存"><input type="checkbox" id="mossHires"> Hires 第二遍</label>
+                  <label title="Hires 放大倍率：1.5 = 边长 ×1.5">倍率</label><input type="number" id="mossHiresScale" step="0.1" min="1" max="3" title="1.5 = 边长 ×1.5（1024 → 1536）；越大越慢">
+                  <label title="Hires 第二遍的改动幅度：0.5 = 改一半，越小越接近原图">重绘</label><input type="number" id="mossHiresDenoise" step="0.05" min="0.05" max="1" title="0.5 = 改一半；0.3 更接近原图但细节加得少；0.8 变化大但可能跑偏">
+                </div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="mossSave">保存参数</button>
+                  <button class="btn-primary" id="mossGenerate">生成</button>
+                  <button class="btn-mini" id="mossInterrupt">中断</button>
+                  <span class="path" id="mossJobLine">—</span>
+                </div>
+
+                <details class="moss-help">
+                  <summary>参数说明（每个选项是什么效果 / 什么时候该改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>提示词</b>（默认空）——想画什么。自然语言（「一个女孩站在雨里，电影感，浅景深」）、标签串、或官方 Layout JSON（整段粘进来，宽高必须与 JSON 画布一致）。<br>写法：主体 + 动作 + 场景 + 光线 + 画风，越具体越可控；堆太多互相冲突的描述会打架，画面变糊或元素乱长。中英文都行（模型对中文手写文字也认）。</div>
+                    <div class="moss-help-item"><b>负向提示词</b>（默认空）——不想出现的内容，如「多余的手指，文字，水印」。<br>官方推荐留空：MOSS 的默认口径下它收益很小；<b>CFG = 1（8 步加速）时它完全不生效</b>，填了也白填。<br>什么时候动：CFG ≥ 2 且反复出现同一类瑕疵时再填；填太多会把正常元素一起赶走。</div>
+                    <div class="moss-help-item"><b>方案</b>（默认 int8）——用哪套权重，切换后要先把对应文件下齐（没下齐面板会红着说话）。<br>· <em>int8</em>：主模型 + 文本编码器都压 8 位，峰值显存约 8.7 G，10–18 G 显存首选；出图和 bf16 肉眼差别很小。<br>· <em>bf16</em>：主模型不压缩，峰值约 15 G，≥18 G 才建议；细节最完整，但更慢更吃显存。<br>· <em>base</em>：训练用的基础版；<b>别配 8 步加速</b>（配了出色块），只在训 LoRA / 要原始基座时用。<br>· <em>diffusers</em>：官方目录版（约 27 G），单文件格式出问题时的兜底，走 HF Loader，速度更慢。<br>· <em>8 步 LoRA</em>：不是独立方案，任何方案都能加（见「8 步加速」）。</div>
+                    <div class="moss-help-item"><b>显存模式</b>（默认「沿用引擎当前」）——这是<b>引擎的启动参数</b>，不是模型参数；<b>改完必须到「环境与依赖」里点一次「按显存模式重启引擎」才生效</b>（跑着的引擎不热改）。<br>· <em>沿用引擎当前</em>：不动它，推荐。<br>· <em>按需放进显卡</em>：默认行为，跑的时候整块显存都给它，最快。<br>· <em>逐层搬运</em>：权重一层层搬进搬出，最省显存、最慢（显存明显不够时的救命档）。<br>· <em>全部常驻</em>：整模型钉在显存里，≥30 G 才用，否则直接爆显存。</div>
+                    <div class="moss-help-item"><b>宽 / 高</b>（默认 1024×1024）——成图尺寸，必须是 16 的倍数（面板自动对齐，填 1000 会变 992）。<br>显存与耗时随<b>面积</b>增长：面积翻倍约等于显存与时间翻倍。1024×1024 在 8 G 卡上 8 步约 30–60 秒；512 更快；2048 很慢且大概率爆显存。<br>宽高不必相等：1024×1536 出竖图、1536×1024 出横图。<br>粘 Layout JSON 时这里的宽高必须和 JSON 画布一致，否则构图错位。</div>
+                    <div class="moss-help-item"><b>步数</b>（默认 50）——采样步数。<br>收益递减很明显：30 步以内提升快，40 步和 50 步几乎看不出差别，超过 50 基本是浪费。<br>开「8 步加速」就填 8（加速 LoRA 已把 50 步的行为蒸进 8 步）；开了加速却仍填 50 → 又慢又容易过曝。<br>关加速时填 4–8 会明显糊（模型没训过这么少的步数）。</div>
+                    <div class="moss-help-item"><b>CFG</b>（默认 3）——提示词权重强度，决定「多听话」。<br>· 调高（5–8）：更贴提示词、对比更强，但容易僵、颜色过饱和发死、细节被压平。<br>· 调低（1–2）：更自由更柔和，但可能不听提示词、主体跑偏。<br>· <b>8 步加速时必须 1</b>——蒸馏模型按 CFG 1 训，&gt;1 会出色块 / 过曝，且此时负向提示词完全失效。<br>改 CFG 后建议先小图试。</div>
+                    <div class="moss-help-item"><b>Shift</b>（默认 5，官方 MOSS 口径）——Flow 调度的时间步偏移，决定「前期定大形 / 后期抠细节」的步数怎么分。这是<b>最不该乱动</b>的一项。<br>· 调大（6–8）：更多步数花在定大形 → 构图更规整、对比更强、边缘更硬；过头会细节僵硬、暗部死黑、整体像被压扁、颜色发闷。<br>· 调小（3–4）：更多步数留给细节 → 画面更柔更细腻；过头则结构松散、主体不稳、容易糊成一团。<br>· 连带影响：Shift 同时是结构增强（SLG）的阈值基准（跳过第 22 层的判定与它共用），改 Shift 会一起改变 SLG 的实际效果——两者要调就一起调，别单动一个。<br>什么时候动：只在「整体明暗 / 结构倾向明显不对，且已排除提示词与 CFG」时小步试，每次 ±0.5，一次只改一个参数。</div>
+                    <div class="moss-help-item"><b>种子</b>（默认 -1 = 随机）——随机数起点。<br>· 留空或 -1：每次生成都不一样。<br>· 填固定数字：同参数 + 同种子 = 同一张图，用来复现或微调（只改一个参数看变化）。注意任何参数 / 方案 / 模型变了，同种子也会出不同的图。<br>产物文件名就是种子——看到喜欢的图，记下文件名即可复现。</div>
+                    <div class="moss-help-item"><b>批次</b>（默认 1）——一次出几张图，显存与耗时按张数线性增长（8 G 卡建议 1–2）。<br>它是同一次采样出多张，不是多跑几轮；要「同提示词不同种子」请改种子重跑。</div>
+                    <div class="moss-help-item"><b>LoRA / 权重</b>（默认不用 / 1.0）——挂你自己的风格或角色 LoRA。<br>权重 0 = 不生效；1 = 作者标注的原强度；0.5–0.8 更轻、更像原生；1.5–2 更浓，过头会糊、色彩崩坏、画面出格子或重影。<br>内置的 8 步加速 LoRA 是另一条通道（由「8 步加速」开关控制），不受这里影响，两者可叠加。</div>
+                    <div class="moss-help-item"><b>8 步加速（DMD）</b>（默认关）——挂蒸馏 LoRA，把 50 步的行为压到 8 步，速度快约 4–6 倍。<br>开了必须配套：<b>步数 8、CFG 1</b>（否则出色块 / 过曝），此时负向提示词失效。<br>只配 SFT（含 int8 压缩版）；<b>配 base 会出色块</b>。<br>质量代价：密集小字、细密纹理这类极端细节略弱于 50 步官方口径；日常出图看不出差别。</div>
+                    <div class="moss-help-item"><b>结构增强（SLG）</b>（默认开）——负向分支跳过第 22 层（0 起算），让结构和手更稳，官方推荐开。<br>· 关掉：更快（省掉一路计算），但手 / 肢体 / 结构崩坏概率上升。<br>· 换层数（如 18 / 26）：等于换「在哪一层做引导」；越靠后越只影响细节，越靠前越影响大形。一般不需要动。<br>· 与 Shift 共用阈值基准，改 Shift 会连带改变它的实际效果。</div>
+                    <div class="moss-help-item"><b>Hires 第二遍</b>（默认关）——先出小图，再像素放大（Lanczos）后以较低重绘幅度采样一遍，用来加细节、去小图噪点。<br>为什么必须走像素放大：MOSS 的 latent 是 128 通道（Flux.2 格式），不能像普通 4 通道 latent 那样直接插值放大。<br>· <em>倍率</em>（默认 1.5）：1.5 = 边长 ×1.5（1024 → 1536）；越大越清晰也越慢越吃显存（面积按平方涨）。<br>· <em>重绘</em>（默认 0.5）：0.5 = 改一半；0.3 更接近原图但细节加得少；0.8 变化大但容易跑偏（人物走形）。<br>代价：总耗时 ≈ 第一遍 + 第二遍，8 G 卡上 1024×1024 开 Hires 要按分钟算。</div>
+                  </div>
+                </details>
+              </div>
             </div>
-            <div class="moss-line">
-              <label>宽</label><input type="number" id="mossWidth" step="16" min="256" max="2048">
-              <label>高</label><input type="number" id="mossHeight" step="16" min="256" max="2048">
-              <label>步数</label><input type="number" id="mossSteps" min="1" max="100">
-              <label>CFG</label><input type="number" id="mossCfg" step="0.1" min="0" max="20">
-              <label>Shift</label><input type="number" id="mossShift" step="0.1" min="0" max="20">
+
+            <div class="rh-block">
+              <h4>出图（产物落 out\moss，文件名 = 种子）</h4>
+              <div class="rh-list" id="mossJob"></div>
+              <div class="moss-shots" id="mossShots"></div>
             </div>
-            <div class="moss-line">
-              <label>种子</label><input type="number" id="mossSeed" step="1">
-              <label>批次</label><input type="number" id="mossBatch" min="1" max="8">
-              <label>LoRA</label><select id="mossLora" class="wide"></select>
-              <label>权重</label><input type="number" id="mossLoraStrength" step="0.05" min="0" max="2">
-            </div>
-            <div class="moss-line">
-              <label class="moss-chk"><input type="checkbox" id="mossAccel"> 8 步加速（DMD）</label>
-              <label class="moss-chk"><input type="checkbox" id="mossSlg"> 结构增强（SLG 跳过 22 层）</label>
-              <label class="moss-chk"><input type="checkbox" id="mossHires"> Hires 第二遍</label>
-              <label>倍率</label><input type="number" id="mossHiresScale" step="0.1" min="1" max="3">
-              <label>重绘</label><input type="number" id="mossHiresDenoise" step="0.05" min="0.05" max="1">
-            </div>
-            <div class="moss-line">
-              <button class="btn-mini" id="mossSave">保存参数</button>
-              <button class="btn-primary" id="mossGenerate">生成</button>
-              <button class="btn-mini" id="mossInterrupt">中断</button>
+          </div>
+
+          <div id="mossViewEnv" style="display:none">
+            <div class="sub-head">
+              <button class="btn-mini" id="mossReload">重新检测</button>
+              <button class="btn-mini" id="mossInstall" title="把 OpenMOSS/MOSS-Image 仓库里的 comfyui/moss-image 装进 custom_nodes">安装插件</button>
+              <button class="btn-mini" id="mossOpenOut">打开产物目录</button>
               <button class="btn-mini" id="mossEngineRestart" title="按选中的显存模式重启本机 ComfyUI（会结束该安装目录下的引擎进程）">按显存模式重启引擎</button>
-              <span class="path" id="mossJobLine">—</span>
+              <span class="spacer"></span>
+              <span class="path" id="mossEnvLine">检测中…</span>
+            </div>
+
+            <div class="rh-block">
+              <h4>环境（ComfyUI 内核 / 插件 / 显卡）</h4>
+              <div class="rh-list" id="mossEnv"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>依赖（软件只带索引，权重按需下载）</h4>
+              <div class="sub-head">
+                <button class="btn-mini" id="mossPlanDownload">一键下载推荐方案</button>
+                <span class="path" id="mossPlanHint">—</span>
+              </div>
+              <div id="mossPlans"></div>
+              <div class="rh-list" id="mossDownloads"></div>
             </div>
           </div>
-        </div>
-
-        <div class="rh-block">
-          <h4>出图（产物落 out\moss，文件名 = 种子）</h4>
-          <div class="rh-list" id="mossJob"></div>
-          <div class="moss-shots" id="mossShots"></div>
         </div>
       </div>
     </div>
@@ -1415,7 +1490,7 @@
       document.getElementById("capTabLocal").classList.toggle("on", cap === "local");
       document.getElementById("capTabRh").classList.toggle("on", cap === "rh");
       document.getElementById("capTabMoss").classList.toggle("on", cap === "moss");
-      const hints = { local: "本地 ComfyUI 工作流", rh: "RunningHub 线上识别", moss: "本机 ComfyUI 跑 MOSS-Image" };
+      const hints = { local: "本地 ComfyUI 工作流", rh: "RunningHub 线上识别", moss: "本地生成（本机引擎 / 内置推理）" };
       document.getElementById("capHint").textContent = hints[cap] || "";
       try { window.localStorage.setItem(CAP_KEY, cap); } catch (e) { /* 忽略 */ }
       if (cap === "rh") { loadRh(); }
@@ -1710,6 +1785,39 @@
     let mossData = null;
     let mossTimer = null;
 
+    // ---- 本地生成：生成器页签（一个生成功能一个页签；新增生成器往这里加一项 + 一个面板）----
+    const LOCAL_GENS = [
+      { id: "moss", name: "MOSS-Image", note: "文生图 / 图生图 · 8 步加速" },
+    ];
+    let genId = "moss";
+
+    function renderGenTabs() {
+      const box = document.getElementById("genTabs");
+      box.innerHTML = LOCAL_GENS.map(g =>
+        '<button class="gen-tab' + (g.id === genId ? " on" : "") + '" data-gen="' + rhText(g.id) + '">'
+        + "<span>" + rhText(g.name) + "</span>"
+        + '<span class="gen-note">' + rhText(g.note) + "</span>"
+        + "</button>"
+      ).join("");
+    }
+
+    function setGen(id) {
+      genId = id;
+      renderGenTabs();
+    }
+
+    // 生成器内部的子签：参数与出图（主面）/ 环境与依赖（内核 / 插件 / 显卡 / 权重下载）
+    function setMossView(view) {
+      const gen = document.getElementById("mossViewGen");
+      const env = document.getElementById("mossViewEnv");
+      if (!gen || !env) { return; }
+      gen.style.display = view === "env" ? "none" : "block";
+      env.style.display = view === "env" ? "block" : "none";
+      for (const tab of document.querySelectorAll(".sub-tab")) {
+        tab.classList.toggle("on", tab.dataset.mossView === view);
+      }
+    }
+
     function mossBytes(n) {
       if (!n || n <= 0) { return "0 B"; }
       const units = ["B", "KB", "MB", "GB", "TB"];
@@ -1777,8 +1885,11 @@
       if (!mossData) { return; }
       const env = mossData.env || {};
 
+      const local = mossData.local || {};
+      const channel = env.running ? "本机 ComfyUI 引擎" : "内置推理（不用开 ComfyUI）";
       document.getElementById("mossEnvLine").textContent = (env.running ? "ComfyUI 运行中" : "ComfyUI 未运行")
         + " · " + (env.canGenerate ? "可生成" : "前置条件不足")
+        + " · 通道 " + channel
         + " · 推荐 " + (mossData.recommendPlan || "int8") + " / " + (mossData.recommendVramMode || "normalvram");
 
       const rows = [];
@@ -1790,6 +1901,9 @@
         + rhText(env.gpuName || "未知") + " · " + Math.round((env.vramMb || 0) / 1024) + "G 显存 · "
         + Math.round((env.ramMb || 0) / 1024) + "G 内存 · " + mossBytes(env.diskFreeBytes) + " 可用</span></div>");
       rows.push('<div class="rh-item"><span class="grow">ComfyUI 根目录</span><span class="rh-dim">' + rhText(env.comfyRoot || "—") + "</span></div>");
+      rows.push('<div class="rh-item"><span class="grow">内置引擎（不用开 ComfyUI）</span><span class="'
+        + (local.state === "error" ? "rh-bad" : "rh-dim") + '">'
+        + rhText(local.state || "stopped") + (local.message ? " · " + rhText(local.message) : "") + "</span></div>");
 
       const blockers = env.blockers || [];
       for (const b of blockers) {
@@ -1966,6 +2080,7 @@
             mossData.job = live.job;
             mossData.downloads = live.downloads;
             mossData.plugin = live.plugin;
+            mossData.local = live.local;
           }
           renderMossLive();
         } catch (e) { /* 轮询失败不打扰 */ }
@@ -1973,6 +2088,18 @@
     }
 
     document.getElementById("capTabMoss").onclick = () => setCap("moss");
+    renderGenTabs();
+    document.getElementById("genTabs").onclick = (ev) => {
+      const btn = ev.target.closest("[data-gen]");
+      if (btn) { setGen(btn.dataset.gen); }
+    };
+    for (const tab of document.querySelectorAll(".sub-tab")) {
+      tab.onclick = () => setMossView(tab.dataset.mossView);
+    }
+    document.getElementById("mossSeedRandom").onclick = () => {
+      document.getElementById("mossSeed").value = -1;
+      toast("种子已设为随机（每次生成都不同）");
+    };
     document.getElementById("mossReload").onclick = loadMoss;
     document.getElementById("mossInstall").onclick = mossInstall;
     document.getElementById("mossSave").onclick = () => mossSave(false);

@@ -722,6 +722,7 @@ public static class Program
                 job = moss.Job(),
                 downloads = moss.Downloads(),
                 plugin = moss.Plugin,
+                local = moss.Local,
             }, JsonOptions);
         });
 
@@ -790,6 +791,12 @@ public static class Program
             string mode = request?.Mode ?? "";
             (bool ok, string message) = await moss.RestartEngineAsync(mode, ct).ConfigureAwait(false);
             return Results.Json(new { ok, message }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/local/stop", () =>
+        {
+            string message = moss.StopLocal();
+            return Results.Json(new { ok = true, message, local = moss.Local }, JsonOptions);
         });
 
         app.MapGet("/api/moss/image", (string? name) =>

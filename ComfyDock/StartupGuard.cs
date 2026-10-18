@@ -143,7 +143,11 @@ public static class StartupGuard
                 continue;
             }
 
-            result.Add(pid);
+            // 同一进程常有多条监听记录（IPv4 / IPv6 各一行）——去重后再报，免得错误提示里同一 pid 重复四遍
+            if (!result.Contains(pid))
+            {
+                result.Add(pid);
+            }
         }
 
         return result;
@@ -198,29 +202,41 @@ public static class StartupGuard
             return false;
         }
     }
-    /// <summary>
-    /// 判断占用端口的进程是不是自己人——换版发布期间旧实例的映像名带 `.old` 后缀（进程名可能随映像名走），
-    /// 所以比名字前先把这个后缀摘掉。认错人会让新实例拒绝启动、旧实例又已停机 → 两个进程全消失。
-    /// </summary>
+    /// <summary>判断占用端口的进程是不是自己人——两边都先归一成基名再比（见 NormalizeName）：换版期间旧实例映像被改名成 `ComfyDock.exe.old` 后，`Process.ProcessName` 会返回带 `.exe` 的 `ComfyDock.exe`，与新实例的 `ComfyDock` 直接比会判成「别的程序」→ 新实例拒绝启动、旧实例又已停机 → 两个进程全消失（2026-10-18 实测复现）。</summary>
     /// <param name="name">占用进程的进程名。</param>
     /// <param name="self">本进程的进程名。</param>
     /// <returns>是否属于本程序的实例。</returns>
     private static bool IsOwnInstance(string name, string self)
     {
-        const string OldSuffix = ".old";
-        string bare = name;
-        if (bare.EndsWith(OldSuffix, StringComparison.OrdinalIgnoreCase))
+        return string.Equals(NormalizeName(name), NormalizeName(self), StringComparison.OrdinalIgnoreCase);
+    }
+    /// <summary>
+    /// 把进程名归一成可比的基名——换版期间映像被改名成 `ComfyDock.exe.old` 时，
+    /// `Process.ProcessName` 会把 `.old` 当扩展名、返回带 `.exe` 的 `ComfyDock.exe`；
+    /// 正常映像返回不带扩展名的 `ComfyDock`。两层后缀一并剥掉才比得齐（2026-10-18 实测根因）。
+    /// </summary>
+    /// <param name="name">进程名。</param>
+    /// <returns>基名。</returns>
+    private static string NormalizeName(string name)
+    {
+        string value = name;
+        bool stripped = true;
+        while (stripped)
         {
-            bare = bare.Substring(0, bare.Length - OldSuffix.Length);
+            stripped = false;
+            if (value.EndsWith(".old", StringComparison.OrdinalIgnoreCase))
+            {
+                value = value.Substring(0, value.Length - 4);
+                stripped = true;
+            }
+            else if (value.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                value = value.Substring(0, value.Length - 4);
+                stripped = true;
+            }
         }
 
-        string selfBare = self;
-        if (selfBare.EndsWith(OldSuffix, StringComparison.OrdinalIgnoreCase))
-        {
-            selfBare = selfBare.Substring(0, selfBare.Length - OldSuffix.Length);
-        }
-
-        return string.Equals(bare, selfBare, StringComparison.OrdinalIgnoreCase);
+        return value;
     }
 }
 

@@ -351,7 +351,7 @@ public sealed class MossRunner
     /// <summary>构造节点图——官方推荐 50 步 / CFG 3 / Shift 5 / Euler + sgm_uniform / SLG 跳过 22 层。</summary>
     /// <param name="p">参数。</param>
     /// <returns>API 格式的节点图。</returns>
-    private static JsonObject BuildGraph(MossGenParams p)
+    public static JsonObject BuildGraph(MossGenParams p)
     {
         var graph = new JsonObject();
         JsonArray modelRef;

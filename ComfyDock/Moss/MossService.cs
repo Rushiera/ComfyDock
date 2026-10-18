@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -131,6 +132,8 @@ public sealed class MossService
 
     /// <summary>轮询是否已被要求停止。</summary>
     private bool _stopPoll;
+    /// <summary>内置推理引擎——ComfyUI 没在跑时走这条，用它的解释器与模型，但不启它的服务。</summary>
+    private readonly MossLocalEngine _local;
 
     /// <summary>ComfyUI 的 input 目录（图生图入口）。</summary>
     private readonly string _inputDir;
@@ -150,6 +153,8 @@ public sealed class MossService
     {
         _env = new MossEnv(comfyRoot, comfyUrl);
         _runner = new MossRunner(comfyUrl);
+        _local = new MossLocalEngine();
+        _local.Prepare(comfyRoot);
         _configPath = Path.Combine(dataDir, "moss-config.json");
         _outDir = outDir;
         _inputDir = Path.Combine(comfyRoot, "input");
@@ -280,6 +285,7 @@ public sealed class MossService
             downloads = jobs,
             job = Job(),
             plugin = _plugin,
+            local = _local.State,
             outDir = _outDir,
             loras = ListModels("loras", "*.safetensors"),
             unets = ListModels("diffusion_models", "*.safetensors"),
@@ -441,11 +447,6 @@ public sealed class MossService
     public async Task<(bool Ok, string Message)> GenerateAsync(CancellationToken ct)
     {
         MossEnvSnapshot env = await _env.ProbeAsync(ct).ConfigureAwait(false);
-        if (!env.Running)
-        {
-            return (false, "本地 ComfyUI 没在跑——先点头部「本地 ComfyUI」启动");
-        }
-
         if (!env.CanGenerate)
         {
             string reason = env.Blockers.Count > 0 ? env.Blockers[0] : "前置条件不足";
@@ -465,6 +466,12 @@ public sealed class MossService
             {
                 return (false, error);
             }
+        }
+
+        // ComfyUI 没在跑 → 走内置推理：同一个解释器、同一份模型，但不启它的服务
+        if (!env.Running)
+        {
+            return StartLocalJob(p);
         }
 
         try
@@ -521,6 +528,25 @@ public sealed class MossService
     public async Task<string> InterruptAsync(CancellationToken ct)
     {
         _stopPoll = true;
+
+        bool local;
+        lock (_gate)
+        {
+            local = _job.PromptId == "local";
+            if (local)
+            {
+                _job.State = "idle";
+                _job.Message = "已停内置引擎（这次生成作废）";
+                _job.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+        }
+
+        if (local)
+        {
+            _local.Stop();
+            return "已停内置引擎（这次生成作废）";
+        }
+
         try
         {
             await _runner.InterruptAsync(ct).ConfigureAwait(false);
@@ -921,5 +947,62 @@ public sealed class MossService
         }
 
         return value > max ? max : value;
+    }
+    /// <summary>内置引擎状态（面板显示「不用开 ComfyUI」这一路的死活）。</summary>
+    public MossLocalState Local
+    {
+        get { return _local.State; }
+    }
+    /// <summary>把这次生成交给内置引擎——不启 ComfyUI 服务，用它的解释器与模型直接跑。</summary>
+    /// <param name="p">生成参数。</param>
+    /// <returns>(是否已受理, 说明)。</returns>
+    private (bool Ok, string Message) StartLocalJob(MossGenParams p)
+    {
+        lock (_gate)
+        {
+            _job = new MossJobStatus
+            {
+                Id = DateTime.Now.ToString("HHmmss"),
+                State = "running",
+                PromptId = "local",
+                Message = "内置引擎跑图中（不用开 ComfyUI）…",
+                Seed = p.Seed,
+                Steps = p.Steps,
+                SubmittedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+            };
+            _stopPoll = false;
+        }
+
+        _ = Task.Run(() => RunLocalJobAsync(p));
+        return (true, "已交给内置引擎（种子 " + p.Seed + "，步数 " + p.Steps + "）");
+    }
+    /// <summary>内置引擎跑一次，结束后更新任务状态。</summary>
+    /// <param name="p">生成参数。</param>
+    /// <returns>无。</returns>
+    private async Task RunLocalJobAsync(MossGenParams p)
+    {
+        // 面板里 LoRA 名用正斜杠，ComfyUI 认反斜杠（内置通道问不到引擎的选项表，直接按规则换）
+        p.AccelLora = p.AccelLora.Replace('/', '\\');
+        p.LoraName = p.LoraName.Replace('/', '\\');
+
+        JsonObject graph = MossRunner.BuildGraph(p);
+        (bool ok, List<string> files, string message) = await _local
+            .RunAsync(graph, _outDir, p.Seed, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        lock (_gate)
+        {
+            _job.State = ok ? "done" : "error";
+            _job.Images = files;
+            _job.Message = message;
+            _job.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+    }
+    /// <summary>停掉内置引擎（把显存还回去）。</summary>
+    /// <returns>说明。</returns>
+    public string StopLocal()
+    {
+        _local.Stop();
+        return "内置引擎已停止";
     }
 }
