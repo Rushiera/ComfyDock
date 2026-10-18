@@ -26,9 +26,14 @@ obj/
 *.user
 CatTemp/
 
-# 随软件走的推理运行时（已退役——改用 ComfyUI 的 python_embeded）
-/runtime/
+# Python 缓存（runtime/rvc 的推理代码随仓库走，但字节码不入库）
+__pycache__/
+*.pyc
+
+# 推理运行时：irodori-tts 的克隆（外部仓库，不入库）
 /runtime/irodori-tts/
+
+# 注意：/runtime/rvc/ 是自持的 RVC 推理代码（rvc_lite 包），随软件入库——不要整体排除 runtime/
 
 # 发布过程产物（exe 同级的运行时配套文件）——只入库 exe 本体
 /ComfyDock.dll

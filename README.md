@@ -8,6 +8,8 @@ ComfyUI 本地 / 线上运行支持的管理软件——把「本地引擎」与
 - **本地生成（MOSS-Image）**——能力板块第三页签：在软件内跑 OpenMOSS 的 MOSS-Image 文生图条线。**模型仍住在本机 ComfyUI**（地址 + 模型目录），软件只带**依赖索引 + 下载方式 + 出图面板**——ComfyUI 哪天没了，掉的只是要重新下载的大文件依赖
 - **本地生成（IrodoriTTS）**——同一页签下的第二个生成器：在软件内跑 Irodori-TTS（RF-DiT 日语 TTS），常驻 worker 只加载一次模型，之后单句十几秒。**「怎么个跑法」可选**：依田芳乃 · v4.1-Small 全 GPU / v4-Large int8 全 GPU（8 G 卡推荐）/ v4-Large bf16 声码器挪 CPU / v4-Large bf16 全 GPU / 自定义。角色靠 LoRA + 参考音频决定（当前挂「依田芳乃」），日后加别的角色模型只换 LoRA 目录。**不装独立运行时**——直接用本机 ComfyUI 的 `python_embeded`；代码在 `ComfyUI\irodori-tts`，权重在 `ComfyUI\models\TTS\yoshino`。来源、环境重建、对上游打的补丁、逐参数说明、**训练/后处理该看哪些文件**都在 [`ComfyDock/docs/irodori-tts.md`](ComfyDock/docs/irodori-tts.md)
 
+- **本地生成（RVC 变声）**——同一页签下的第四个生成器：把一段人声的**音色**换成另一个音色（内容与时长保留）。音色模型 / 检索索引 / HuBERT / RMVPE 都住本机 ComfyUI 的 `models\RVC\`，推理代码**随软件走**（`runtime/rvc/rvc_lite`，自持实现）——**不跑 RVC 的 WebUI、不依赖它的整合包、不装 fairseq**（HuBERT 为纯 torch 复刻，逐层与原版对齐 ≤ 7e-6）。依赖（faiss-cpu / pyworld / praat-parselmouth / torchcrepe）装进 ComfyUI 的 `python_embeded`。口径、验证数字与**改动入手点**见 [`runtime/rvc/README.md`](runtime/rvc/README.md)
+
 ## 形态
 
 C# / .NET 8 · 单文件 exe（framework-dependent，依赖 .NET 8 运行时）+ Kestrel 内嵌 + `wwwroot` 单页（原生 JS，无前端构建链）。

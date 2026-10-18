@@ -66,6 +66,42 @@ public sealed class AppOptions
     /// <summary>本地生成（IrodoriTTS）产物落点目录（默认 exe 同级 out\tts）。</summary>
     public string TtsOutDir { get; set; } = "";
 
+    /// <summary>本地生成（RVC 变声）——解释器：同样直接用本机 ComfyUI 的 python_embeded。</summary>
+    public string RvcPython { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\python_embeded\python.exe";
+
+    /// <summary>本地生成（RVC 变声）——推理代码目录（含 rvc_lite 包，随 ComfyDock 走）。</summary>
+    public string RvcRepo { get; set; } = @"D:\Mau\WorkSpace\ComfyDock\runtime\rvc";
+
+    /// <summary>本地生成（RVC 变声）——模型根目录（ComfyUI\models\RVC：weights / indices / hubert / rmvpe）。</summary>
+    public string RvcModels { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\models\RVC";
+
+    /// <summary>本地生成（RVC 变声）产物落点目录（默认 exe 同级 out\rvc）。</summary>
+    public string RvcOutDir { get; set; } = "";
+
+    /// <summary>RVC 自检 CLI——给一段音频，跑一遍变声后打印结果并退出；空 = 不起该分支。</summary>
+    public string RvcSelfTest { get; set; } = "";
+
+    /// <summary>RVC 自检 CLI——指定音色模型文件名（空 = weights 里第一个）。</summary>
+    public string RvcModel { get; set; } = "";
+
+    /// <summary>本地生成（Qwen3-Omni 转写）——引擎：llama.cpp 的 llama-mtmd-cli（同目录 DLL 一起）。</summary>
+    public string OmniCli { get; set; } = @"D:\Mau\WorkSpace\协商知识库\tools\llama\bin\llama-mtmd-cli.exe";
+
+    /// <summary>本地生成（Qwen3-Omni 转写）——主模型（模型住本机 ComfyUI 的 models\LLM）。</summary>
+    public string OmniModel { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\models\LLM\Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf";
+
+    /// <summary>本地生成（Qwen3-Omni 转写）——音频编码器（mmproj，音频入口在这里）。</summary>
+    public string OmniMmproj { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\models\LLM\mmproj-Qwen3-Omni-30B-A3B-Instruct-bf16.gguf";
+
+    /// <summary>本地生成（Qwen3-Omni 转写）——解释器：借 ComfyUI 的 python_embeded 探音频时长。</summary>
+    public string OmniPython { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\python_embeded\python.exe";
+
+    /// <summary>本地生成（Qwen3-Omni 转写）产物落点目录（默认 exe 同级 out\omni）。</summary>
+    public string OmniOutDir { get; set; } = "";
+
+    /// <summary>Qwen3-Omni 自检 CLI——给一段音频，跑一遍转写后打印结果并退出；空 = 不起该分支。</summary>
+    public string OmniSelfTest { get; set; } = "";
+
 
     /// <summary>WD Tagger 自检 CLI——给一张图片，跑一遍打标后打印 JSON 并退出；空 = 不起该分支。</summary>
     public string TaggerSelfTest { get; set; } = "";
@@ -172,6 +208,42 @@ public sealed class AppOptions
                 case "--tts-out":
                     options.TtsOutDir = RequireValue(args, ref i, key);
                     break;
+                case "--rvc-python":
+                    options.RvcPython = RequireValue(args, ref i, key);
+                    break;
+                case "--rvc-repo":
+                    options.RvcRepo = RequireValue(args, ref i, key);
+                    break;
+                case "--rvc-models":
+                    options.RvcModels = RequireValue(args, ref i, key);
+                    break;
+                case "--rvc-out":
+                    options.RvcOutDir = RequireValue(args, ref i, key);
+                    break;
+                case "--rvc-selftest":
+                    options.RvcSelfTest = RequireValue(args, ref i, key);
+                    break;
+                case "--rvc-model":
+                    options.RvcModel = RequireValue(args, ref i, key);
+                    break;
+                case "--omni-cli":
+                    options.OmniCli = RequireValue(args, ref i, key);
+                    break;
+                case "--omni-model":
+                    options.OmniModel = RequireValue(args, ref i, key);
+                    break;
+                case "--omni-mmproj":
+                    options.OmniMmproj = RequireValue(args, ref i, key);
+                    break;
+                case "--omni-python":
+                    options.OmniPython = RequireValue(args, ref i, key);
+                    break;
+                case "--omni-out":
+                    options.OmniOutDir = RequireValue(args, ref i, key);
+                    break;
+                case "--omni-selftest":
+                    options.OmniSelfTest = RequireValue(args, ref i, key);
+                    break;
                 case "--tagger-selftest":
                     options.TaggerSelfTest = RequireValue(args, ref i, key);
                     break;
@@ -238,6 +310,16 @@ public sealed class AppOptions
         if (string.IsNullOrWhiteSpace(options.TtsOutDir))
         {
             options.TtsOutDir = Path.Combine(AppContext.BaseDirectory, "out", "tts");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.RvcOutDir))
+        {
+            options.RvcOutDir = Path.Combine(AppContext.BaseDirectory, "out", "rvc");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.OmniOutDir))
+        {
+            options.OmniOutDir = Path.Combine(AppContext.BaseDirectory, "out", "omni");
         }
 
         return options;

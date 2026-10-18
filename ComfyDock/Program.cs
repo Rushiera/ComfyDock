@@ -17,7 +17,9 @@ using Microsoft.Extensions.Logging;
 using ComfyDock.Collect;
 using ComfyDock.Local;
 using ComfyDock.Moss;
+using ComfyDock.Omni;
 using ComfyDock.RunningHub;
+using ComfyDock.Rvc;
 using ComfyDock.Shortcut;
 using ComfyDock.Store;
 using ComfyDock.Tagger;
@@ -80,6 +82,28 @@ public static class Program
             return await TaggerCli.RunAsync(
                 options.TaggerSelfTest,
                 options.LocalComfyRoot).ConfigureAwait(false);
+        }
+
+        if (options.RvcSelfTest.Length > 0)
+        {
+            return await RvcCli.RunAsync(
+                options.RvcSelfTest,
+                options.RvcPython,
+                options.RvcRepo,
+                options.RvcModels,
+                options.RvcModel,
+                options.RvcOutDir).ConfigureAwait(false);
+        }
+
+        if (options.OmniSelfTest.Length > 0)
+        {
+            return await OmniCli.RunAsync(
+                options.OmniSelfTest,
+                options.OmniCli,
+                options.OmniModel,
+                options.OmniMmproj,
+                options.OmniPython,
+                options.OmniOutDir).ConfigureAwait(false);
         }
 
         if (!File.Exists(options.ChromePath))
@@ -151,12 +175,35 @@ public static class Program
             },
             options.DataDir);
 
+        // [段3e] 本地生成（RVC 变声）——推理代码随 ComfyDock 走，模型住 ComfyUI\models\RVC，跑在 python_embeded 上
+        var rvc = new RvcService(
+            new RvcConfig
+            {
+                PythonPath = options.RvcPython,
+                RepoDir = options.RvcRepo,
+                ModelsRoot = options.RvcModels,
+            },
+            options.DataDir,
+            options.RvcOutDir);
+
+        // [段3f] 本地生成（Qwen3-Omni 转写）——引擎是 llama.cpp 的 llama-mtmd-cli，模型住 ComfyUI\models\LLM
+        var omni = new OmniService(
+            new OmniConfig
+            {
+                CliPath = options.OmniCli,
+                ModelPath = options.OmniModel,
+                MmprojPath = options.OmniMmproj,
+                PythonPath = options.OmniPython,
+            },
+            options.DataDir,
+            options.OmniOutDir);
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:" + options.Port);
 
         WebApplication app = builder.Build();
-        MapEndpoints(app, options, store, service, hub, gateway, local, rh, moss, tts, tagger);
+        MapEndpoints(app, options, store, service, hub, gateway, local, rh, moss, tts, tagger, rvc, omni);
 
         await app.StartAsync().ConfigureAwait(false);
 
@@ -186,6 +233,8 @@ public static class Program
     /// <param name="moss">本地生成（MOSS-Image）服务。</param>
     /// <param name="tts">本地生成（IrodoriTTS）服务。</param>
     /// <param name="tagger">本地生成（WD Tagger 打标）服务。</param>
+    /// <param name="rvc">本地生成（RVC 变声）服务。</param>
+    /// <param name="omni">本地生成（Qwen3-Omni 转写）服务。</param>
     private static void MapEndpoints(
         WebApplication app,
         AppOptions options,
@@ -197,7 +246,9 @@ public static class Program
         RhService rh,
         MossService moss,
         TtsService tts,
-        TaggerService tagger)
+        TaggerService tagger,
+        RvcService rvc,
+        OmniService omni)
     {
         string webRoot = Path.Combine(app.Environment.ContentRootPath, "Web", "wwwroot");
         if (!Directory.Exists(webRoot))
@@ -1077,6 +1128,176 @@ public static class Program
                     UseShellExecute = true,
                 });
                 return Results.Json(new { ok = true, path = dir }, JsonOptions);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        // 本地生成（RVC 变声）——能力板块第三个页签里的第四个生成器：环境 / 音色模型 / 变声 / 产物
+        app.MapGet("/api/rvc", async (CancellationToken ct) =>
+        {
+            return Results.Json(await rvc.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/rvc/live", () =>
+        {
+            // 轻量轮询面——只回任务与引擎，不重探磁盘
+            return Results.Json(new
+            {
+                job = rvc.Job(),
+                engine = rvc.Engine,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/config", (RvcConfig request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
+            }
+
+            RvcConfig saved = rvc.UpdateConfig(request);
+            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/pick", async (RhPickRequest request) =>
+        {
+            string kind = request is null || request.Kind is null ? "audio" : request.Kind;
+            bool directory = string.Equals(kind, "dir", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                string path = directory
+                    ? await NativePicker.PickDirectoryAsync("选择待变声的目录").ConfigureAwait(false)
+                    : await NativePicker.PickAudioFileAsync("选择待变声的音频").ConfigureAwait(false);
+                return Results.Json(new { ok = true, path }, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        app.MapPost("/api/rvc/generate", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await rvc.GenerateAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = rvc.Job() }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/stop", () =>
+        {
+            string message = rvc.Stop();
+            return Results.Json(new { ok = true, message, engine = rvc.Engine, job = rvc.Job() }, JsonOptions);
+        });
+
+        app.MapGet("/api/rvc/audio", (string? name) =>
+        {
+            string path = rvc.OutputPath(name ?? "");
+            if (path.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(path, "audio/wav");
+        });
+
+        app.MapPost("/api/rvc/open-out", () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(rvc.OutDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = rvc.OutDir,
+                    UseShellExecute = true,
+                });
+                return Results.Json(new { ok = true, path = rvc.OutDir }, JsonOptions);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        // 本地生成（Qwen3-Omni 转写）——能力板块第三个页签里的第五个生成器：环境 / 提示词 / 转写 / 产物
+        app.MapGet("/api/omni", async (CancellationToken ct) =>
+        {
+            return Results.Json(await omni.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/omni/live", () =>
+        {
+            // 轻量轮询面——只回任务与引擎状态，不重探磁盘
+            return Results.Json(new
+            {
+                job = omni.Job(),
+                engine = omni.Engine,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/omni/config", (OmniConfig request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
+            }
+
+            OmniConfig saved = omni.UpdateConfig(request);
+            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+        });
+
+        app.MapPost("/api/omni/pick", async (RhPickRequest request) =>
+        {
+            string kind = request is null || request.Kind is null ? "audio" : request.Kind;
+            bool directory = string.Equals(kind, "dir", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                string path = directory
+                    ? await NativePicker.PickDirectoryAsync("选择待转写的目录").ConfigureAwait(false)
+                    : await NativePicker.PickAudioFileAsync("选择待转写的音频").ConfigureAwait(false);
+                return Results.Json(new { ok = true, path }, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        app.MapPost("/api/omni/transcribe", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await omni.GenerateAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = omni.Job() }, JsonOptions);
+        });
+
+        app.MapPost("/api/omni/stop", () =>
+        {
+            string message = omni.Stop();
+            return Results.Json(new { ok = true, message, engine = omni.Engine, job = omni.Job() }, JsonOptions);
+        });
+
+        app.MapGet("/api/omni/text", (string? name) =>
+        {
+            string path = omni.OutputPath(name ?? "");
+            if (path.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(path, "text/plain; charset=utf-8");
+        });
+
+        app.MapPost("/api/omni/open-out", () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(omni.OutDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = omni.OutDir,
+                    UseShellExecute = true,
+                });
+                return Results.Json(new { ok = true, path = omni.OutDir }, JsonOptions);
             }
             catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
             {
