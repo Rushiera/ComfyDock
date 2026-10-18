@@ -36,6 +36,40 @@ public sealed class AppOptions
     /// <summary>本地生成（MOSS）产物落点目录（默认 exe 同级 out\moss）。</summary>
     public string MossOutDir { get; set; } = "";
 
+    /// <summary>本地生成（依田芳乃 TTS）——irodori-tts 的 venv 解释器（随软件走，在 exe 同级 runtime 下）。</summary>
+    public string TtsPython { get; set; } = @"D:\Mau\WorkSpace\ComfyDock\runtime\irodori-tts\.venv\Scripts\python.exe";
+
+    /// <summary>本地生成（依田芳乃 TTS）——Irodori-TTS 仓库根目录（worker 的 sys.path 落点）。</summary>
+    public string TtsRepo { get; set; } = @"D:\Mau\WorkSpace\ComfyDock\runtime\irodori-tts";
+
+    /// <summary>本地生成（依田芳乃 TTS）——基座 safetensors。</summary>
+    public string TtsBaseModel { get; set; } = @"D:\Mau\WorkSpace\models\Irodori-TTS-v4.1-Small\model.safetensors";
+
+    /// <summary>本地生成（依田芳乃 TTS）——声码器 weights.pth。</summary>
+    public string TtsCodec { get; set; } = @"D:\Mau\WorkSpace\models\Semantic-DACVAE-Japanese-32dim\weights.pth";
+
+    /// <summary>本地生成（依田芳乃 TTS）——LoRA 适配器目录。</summary>
+    public string TtsLora { get; set; } = @"D:\Mau\WorkSpace\yoshino_lora\small";
+
+    /// <summary>本地生成（依田芳乃 TTS）——大模型基座 safetensors（v4-Large，3.29B）。</summary>
+    public string TtsLargeBaseModel { get; set; } = @"D:\Mau\WorkSpace\models\Irodori-TTS-v4-Large\model.safetensors";
+
+    /// <summary>本地生成（依田芳乃 TTS）——大模型 int8 量化基座 safetensors（3.84 G，8 G 卡推荐）。</summary>
+    public string TtsLargeInt8BaseModel { get; set; } = @"D:\Mau\WorkSpace\models\Irodori-TTS-v4-Large-Quantized\int8-weight-only\model.safetensors";
+
+    /// <summary>本地生成（依田芳乃 TTS）——大模型 LoRA 适配器目录（rank 32）。</summary>
+    public string TtsLargeLora { get; set; } = @"D:\Mau\WorkSpace\yoshino_lora\large";
+
+    /// <summary>本地生成（依田芳乃 TTS）——参考音频目录。</summary>
+    public string TtsRefsDir { get; set; } = @"D:\Mau\WorkSpace\yoshino_lora\references";
+
+    /// <summary>本地生成（依田芳乃 TTS）产物落点目录（默认 exe 同级 out\tts）。</summary>
+    public string TtsOutDir { get; set; } = "";
+
+
+    /// <summary>WD Tagger 自检 CLI——给一张图片，跑一遍打标后打印 JSON 并退出；空 = 不起该分支。</summary>
+    public string TaggerSelfTest { get; set; } = "";
+
     /// <summary>本地 ComfyUI 工作流目录（待上传的工作流来源）。</summary>
     public string LocalWorkflowsRoot { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\user\default\workflows";
 
@@ -108,6 +142,39 @@ public sealed class AppOptions
                 case "--moss-out":
                     options.MossOutDir = RequireValue(args, ref i, key);
                     break;
+                case "--tts-python":
+                    options.TtsPython = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-repo":
+                    options.TtsRepo = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-base":
+                    options.TtsBaseModel = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-codec":
+                    options.TtsCodec = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-lora":
+                    options.TtsLora = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-large-base":
+                    options.TtsLargeBaseModel = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-large-int8-base":
+                    options.TtsLargeInt8BaseModel = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-large-lora":
+                    options.TtsLargeLora = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-refs":
+                    options.TtsRefsDir = RequireValue(args, ref i, key);
+                    break;
+                case "--tts-out":
+                    options.TtsOutDir = RequireValue(args, ref i, key);
+                    break;
+                case "--tagger-selftest":
+                    options.TaggerSelfTest = RequireValue(args, ref i, key);
+                    break;
                 case "--concurrency":
                     options.Concurrency = RequireInt(args, ref i, key);
                     break;
@@ -166,6 +233,11 @@ public sealed class AppOptions
         if (string.IsNullOrWhiteSpace(options.MossOutDir))
         {
             options.MossOutDir = Path.Combine(AppContext.BaseDirectory, "out", "moss");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.TtsOutDir))
+        {
+            options.TtsOutDir = Path.Combine(AppContext.BaseDirectory, "out", "tts");
         }
 
         return options;

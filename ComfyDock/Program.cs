@@ -20,6 +20,8 @@ using ComfyDock.Moss;
 using ComfyDock.RunningHub;
 using ComfyDock.Shortcut;
 using ComfyDock.Store;
+using ComfyDock.Tagger;
+using ComfyDock.Tts;
 
 namespace ComfyDock;
 
@@ -72,6 +74,14 @@ public static class Program
             return LatentCli.RunUnpack(options.CdlatUnpack);
         }
 
+        // [段0d] WD 打标自检 CLI——同一套引擎代码路径，单图跑通并打印结果（不占端口、不要 chrome）
+        if (options.TaggerSelfTest.Length > 0)
+        {
+            return await TaggerCli.RunAsync(
+                options.TaggerSelfTest,
+                options.LocalComfyRoot).ConfigureAwait(false);
+        }
+
         if (!File.Exists(options.ChromePath))
         {
             Console.Error.WriteLine("找不到 chrome：" + options.ChromePath + "（用 --chrome 指定）");
@@ -116,12 +126,37 @@ public static class Program
         // [段3b] 本地生成（MOSS-Image）——依赖索引 / 下载 / 插件 / 生成，全部走本机 ComfyUI 的 HTTP API
         var moss = new MossService(options.LocalComfyRoot, options.LocalComfyUrl, options.DataDir, options.MossOutDir);
 
+        // [段3c] 本地生成（依田芳乃 TTS）——常驻 worker 跑 Irodori-TTS，基座 + 声码器 + LoRA 只加载一次
+        var tts = new TtsService(
+            new TtsConfig
+            {
+                PythonPath = options.TtsPython,
+                RepoDir = options.TtsRepo,
+                BaseModel = options.TtsBaseModel,
+                CodecWeights = options.TtsCodec,
+                LoraDir = options.TtsLora,
+                RefsDir = options.TtsRefsDir,
+                LargeBaseModel = options.TtsLargeBaseModel,
+                LargeInt8BaseModel = options.TtsLargeInt8BaseModel,
+                LargeLoraDir = options.TtsLargeLora,
+            },
+            options.DataDir,
+            options.TtsOutDir);
+
+        // [段3d] 本地生成（WD Tagger 打标）——模型住 ComfyUI 的 models\onnx，推理借 python_embeded 跑常驻 worker
+        var tagger = new TaggerService(
+            new TaggerConfig
+            {
+                ComfyRoot = options.LocalComfyRoot,
+            },
+            options.DataDir);
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:" + options.Port);
 
         WebApplication app = builder.Build();
-        MapEndpoints(app, options, store, service, hub, gateway, local, rh, moss);
+        MapEndpoints(app, options, store, service, hub, gateway, local, rh, moss, tts, tagger);
 
         await app.StartAsync().ConfigureAwait(false);
 
@@ -149,6 +184,8 @@ public static class Program
     /// <param name="local">本地 ComfyUI 入口。</param>
     /// <param name="rh">线上识别服务。</param>
     /// <param name="moss">本地生成（MOSS-Image）服务。</param>
+    /// <param name="tts">本地生成（依田芳乃 TTS）服务。</param>
+    /// <param name="tagger">本地生成（WD Tagger 打标）服务。</param>
     private static void MapEndpoints(
         WebApplication app,
         AppOptions options,
@@ -158,7 +195,9 @@ public static class Program
         CdpGateway gateway,
         LocalComfy local,
         RhService rh,
-        MossService moss)
+        MossService moss,
+        TtsService tts,
+        TaggerService tagger)
     {
         string webRoot = Path.Combine(app.Environment.ContentRootPath, "Web", "wwwroot");
         if (!Directory.Exists(webRoot))
@@ -827,6 +866,223 @@ public static class Program
                 return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
             }
         });
+
+        // 本地生成（依田芳乃 TTS）——能力板块第三个页签里的第二个生成器：环境 / 配置 / 合成 / 产物
+        app.MapGet("/api/tts", async (CancellationToken ct) =>
+        {
+            return Results.Json(await tts.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/tts/live", () =>
+        {
+            // 轻量轮询面——只回任务与引擎状态，不重探磁盘
+            return Results.Json(new
+            {
+                job = tts.Job(),
+                engine = tts.Engine,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/tts/config", (TtsConfig request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
+            }
+
+            TtsConfig saved = tts.UpdateConfig(request);
+            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+        });
+
+        app.MapPost("/api/tts/generate", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await tts.GenerateAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = tts.Job() }, JsonOptions);
+        });
+
+        app.MapPost("/api/tts/stop", () =>
+        {
+            string message = tts.Stop();
+            return Results.Json(new { ok = true, message, engine = tts.Engine, job = tts.Job() }, JsonOptions);
+        });
+
+        app.MapGet("/api/tts/audio", (string? name) =>
+        {
+            string path = tts.OutputPath(name ?? "");
+            if (path.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(path, "audio/wav");
+        });
+
+        app.MapPost("/api/tts/open-out", () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(tts.OutDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = tts.OutDir,
+                    UseShellExecute = true,
+                });
+                return Results.Json(new { ok = true, path = tts.OutDir }, JsonOptions);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        // 本地生成（WD Tagger 打标）——能力板块第三个页签里的第三个生成器：环境 / 模型索引与下载 / 打标 / 结果
+        app.MapGet("/api/tagger", async (CancellationToken ct) =>
+        {
+            return Results.Json(await tagger.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/tagger/live", () =>
+        {
+            // 轻量轮询面——只回任务、引擎与下载，不重探磁盘
+            return Results.Json(new
+            {
+                job = tagger.Job(),
+                engine = tagger.Engine,
+                downloads = tagger.Downloads(),
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/tagger/config", (TaggerConfig request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
+            }
+
+            TaggerConfig saved = tagger.UpdateConfig(request);
+            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+        });
+
+        app.MapPost("/api/tagger/pick", async (RhPickRequest request) =>
+        {
+            string kind = request is null || request.Kind is null ? "image" : request.Kind;
+            bool directory = string.Equals(kind, "dir", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                string path = directory
+                    ? await NativePicker.PickDirectoryAsync("选择待打标目录").ConfigureAwait(false)
+                    : await NativePicker.PickImageFileAsync("选择待打标图片").ConfigureAwait(false);
+                return Results.Json(new { ok = true, path }, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        app.MapPost("/api/tagger/generate", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await tagger.GenerateAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = tagger.Job() }, JsonOptions);
+        });
+
+        app.MapPost("/api/tagger/stop", () =>
+        {
+            string message = tagger.Stop();
+            return Results.Json(new { ok = true, message, engine = tagger.Engine, job = tagger.Job() }, JsonOptions);
+        });
+
+        app.MapPost("/api/tagger/download", (TaggerDownloadRequest request) =>
+        {
+            bool byModel = request is not null
+                && string.Equals(request.Kind, "model", StringComparison.OrdinalIgnoreCase);
+            if (byModel)
+            {
+                (bool okModel, string messageModel) = tagger.DownloadModel();
+                return Results.Json(new { ok = okModel, message = messageModel }, JsonOptions);
+            }
+
+            if (request is null || string.IsNullOrWhiteSpace(request.Id))
+            {
+                return Results.Json(new { ok = false, error = "缺 id" }, JsonOptions, statusCode: 400);
+            }
+
+            (bool ok, string message) = tagger.DownloadFile(request.Id);
+            return Results.Json(new { ok, message }, JsonOptions);
+        });
+
+        app.MapPost("/api/tagger/download/cancel", (TaggerDownloadRequest request) =>
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.Id))
+            {
+                return Results.Json(new { ok = false, error = "缺 id" }, JsonOptions, statusCode: 400);
+            }
+
+            string message = tagger.CancelDownload(request.Id);
+            return Results.Json(new { ok = true, message }, JsonOptions);
+        });
+
+        app.MapGet("/api/tagger/text", (string? path) =>
+        {
+            string text = TaggerService.TextPathOf(path ?? "");
+            if (text.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(text, "text/plain; charset=utf-8");
+        });
+
+        app.MapGet("/api/tagger/image", (string? path) =>
+        {
+            // 只放行图片扩展名、且必须真实存在——不代理任意文件
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return Results.NotFound();
+            }
+
+            string ext = Path.GetExtension(path).ToLowerInvariant();
+            string mime = ext switch
+            {
+                ".png" => "image/png",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".webp" => "image/webp",
+                ".bmp" => "image/bmp",
+                ".gif" => "image/gif",
+                ".tif" or ".tiff" => "image/tiff",
+                _ => "",
+            };
+
+            if (mime.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(path, mime);
+        });
+
+        app.MapPost("/api/tagger/open-out", (TaggerOpenRequest request) =>
+        {
+            string dir = request is null ? "" : (request.Path ?? "");
+            if (dir.Length == 0 || !Directory.Exists(dir))
+            {
+                return Results.Json(new { ok = false, error = "目录不存在：" + dir }, JsonOptions, statusCode: 400);
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = dir,
+                    UseShellExecute = true,
+                });
+                return Results.Json(new { ok = true, path = dir }, JsonOptions);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
     }
 
     /// <summary>按快捷方式路径找扫描结果。</summary>
@@ -1026,3 +1282,12 @@ public sealed record MossFileRequest(string? FileId);
 /// <summary>MOSS 引擎重启请求体。</summary>
 /// <param name="Mode">显存模式：lowvram / normalvram / highvram（空 = 用配置里存的）。</param>
 public sealed record MossEngineRequest(string? Mode);
+
+/// <summary>WD Tagger 下载请求体。</summary>
+/// <param name="Id">模型 id（kind=model）或文件 id（kind=file）。</param>
+/// <param name="Kind">model（整模型两件）/ file（单文件，默认）。</param>
+public sealed record TaggerDownloadRequest(string? Id, string? Kind);
+
+/// <summary>WD Tagger 打开目录请求体。</summary>
+/// <param name="Path">要打开的目录完整路径。</param>
+public sealed record TaggerOpenRequest(string? Path);

@@ -482,6 +482,207 @@
             </div>
           </div>
         </div>
+
+        <div id="genPanelTts" style="display:none">
+          <div class="sub-tabs">
+            <button class="sub-tab on" data-tts-view="gen">参数与出音</button>
+            <button class="sub-tab" data-tts-view="env">环境与依赖</button>
+          </div>
+
+          <div id="ttsViewGen">
+            <div class="rh-block">
+              <h4>文本（日语）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label title="跑法 = 用哪个基座 + 哪个 LoRA + 声码器放哪。小模型 500M 全 GPU 最快；大模型 3.29B 质量更好，但 8 G 卡要把声码器挪到 CPU 才留得出显存">跑法</label>
+                  <select id="ttsRunMode">
+                    <option value="small">小模型 v4.1-Small · 全 GPU（默认，最快）</option>
+                    <option value="large-int8">大模型 v4-Large int8 量化 · 全 GPU（8 G 卡推荐）</option>
+                    <option value="large">大模型 v4-Large bf16 · 声码器在 CPU（8 G 卡会慢，≥12 G 更合适）</option>
+                    <option value="large-gpu">大模型 v4-Large bf16 · 全 GPU（≥12 G 显存）</option>
+                    <option value="custom">自定义（用「环境与依赖」里的路径与设备）</option>
+                  </select>
+                  <span class="path" id="ttsPlanLine">—</span>
+                </div>
+                <textarea id="ttsText" class="ws-prompt" title="要读的日语文本。长文本建议一句一行，标点保留——模型的时长预测按文本长度估总时长" placeholder="こんにちは、わたくしは依田芳乃と申します。"></textarea>
+                <textarea id="ttsCaption" class="ws-prompt" style="min-height:38px" title="风格描述（voice design 条件，可空）。参考音频给的是音色，caption 给的是说话方式" placeholder="风格描述（可选，如「穏やかで柔らかい女性の声」）"></textarea>
+                <div class="moss-line">
+                  <label title="采样步数：官方口径 40；6~10 步更快但质量降">步数</label><input type="number" id="ttsSteps" min="1" max="200">
+                  <label title="留空或 -1 = 每次随机；填数字 = 固定种子">种子</label><input type="number" id="ttsSeed" step="1" placeholder="随机">
+                  <button class="btn-mini" id="ttsSeedRandom" title="把种子设回随机（每次都不一样）">随机</button>
+                  <label title="时长倍率：>1 更长，<1 更短（由模型预测时长后乘这个数）">时长倍率</label><input type="number" id="ttsDurationScale" step="0.05" min="0.2" max="4">
+                  <label title="强制输出秒数（留空 = 自动预测；填了会盖掉时长预测）">强制秒数</label><input type="number" id="ttsSeconds" step="0.5" min="0" placeholder="自动">
+                </div>
+                <div class="moss-line">
+                  <label title="bf16 更快（8 G 卡推荐）；fp32 最稳但更慢更吃显存">精度</label>
+                  <select id="ttsPrecision">
+                    <option value="bf16">bf16</option>
+                    <option value="fp32">fp32</option>
+                  </select>
+                  <label class="moss-chk" title="挂上依田芳乃 LoRA；关掉 = 只用基座（用于对比）"><input type="checkbox" id="ttsUseLora"> 挂 LoRA</label>
+                  <label class="moss-chk" title="不用参考音频（音色会漂到基座的通用音色，一般关着）"><input type="checkbox" id="ttsNoRef"> 不用参考音频</label>
+                </div>
+                <div class="moss-line rh-dim" style="font-size:11px">
+                  参考音频：多选按顺序拼接（训练时就是这么拼的，30 秒左右收益最大）；一段都不勾 = 用目录里全部
+                </div>
+                <div class="moss-line" id="ttsRefs" style="gap:10px"></div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="ttsSave">保存参数</button>
+                  <button class="btn-primary" id="ttsGenerate">生成</button>
+                  <button class="btn-mini" id="ttsStop" title="把常驻引擎停掉（显存还回去；在跑的这一句作废）">停止引擎</button>
+                  <span class="path" id="ttsJobLine">—</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>出音（产物落 out\tts，文件名 = 时间戳）</h4>
+              <div class="rh-list" id="ttsJob"></div>
+              <div id="ttsAudios"></div>
+              <div class="rh-list" id="ttsOutputs"></div>
+            </div>
+          </div>
+
+          <div id="ttsViewEnv" style="display:none">
+            <div class="sub-head">
+              <button class="btn-mini" id="ttsReload">重新检测</button>
+              <button class="btn-mini" id="ttsOpenOut">打开产物目录</button>
+              <span class="spacer"></span>
+              <span class="path" id="ttsEnvLine">检测中…</span>
+            </div>
+
+            <div class="rh-block">
+              <h4>环境（解释器 / 仓库 / 基座 / 声码器 / LoRA / 参考音频）</h4>
+              <div class="rh-list" id="ttsEnv"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>路径（改完点保存；引擎会按新路径重载，下一句生效）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label>解释器</label><input type="text" id="ttsPythonPath" style="width:520px" title="irodori-tts 自己的 venv 里的 python.exe（不要用 ComfyUI 的 python_embeded）">
+                </div>
+                <div class="moss-line">
+                  <label>仓库目录</label><input type="text" id="ttsRepoDir" style="width:520px" title="Irodori-TTS 仓库根目录（含 irodori_tts 包与 infer.py）">
+                </div>
+                <div class="moss-line">
+                  <label>基座模型</label><input type="text" id="ttsBaseModel" style="width:520px" title="基座 safetensors（v4.1-Small）；同目录下要有 tokenizer\">
+                </div>
+                <div class="moss-line">
+                  <label>声码器</label><input type="text" id="ttsCodecWeights" style="width:520px" title="Semantic-DACVAE-Japanese-32dim 的 weights.pth">
+                </div>
+                <div class="moss-line">
+                  <label>LoRA 目录</label><input type="text" id="ttsLoraDir" style="width:520px" title="PEFT 适配器目录（含 adapter_config.json + adapter_model.safetensors）——小模型那条线">
+                </div>
+                <div class="moss-line">
+                  <label>大模型基座</label><input type="text" id="ttsLargeBaseModel" style="width:520px" title="v4-Large 的 model.safetensors（3.29B / fp32 13.2 GB）；同目录下要有 tokenizer\">
+                </div>
+                <div class="moss-line">
+                  <label>大模型 int8</label><input type="text" id="ttsLargeInt8BaseModel" style="width:520px" title="v4-Large-Quantized\int8-weight-only\model.safetensors（3.84 GB，需要 torchao）；同父目录下要有 tokenizer\">
+                </div>
+                <div class="moss-line">
+                  <label>大模型 LoRA</label><input type="text" id="ttsLargeLoraDir" style="width:520px" title="rank 32 的 PEFT 适配器目录——大模型那条线">
+                </div>
+                <div class="moss-line">
+                  <label>声码器设备</label>
+                  <select id="ttsCodecDevice" title="只在「自定义」跑法下生效；其余跑法由跑法决定（大模型默认把声码器放 CPU 省显存）">
+                    <option value="cuda">cuda（跟模型同卡）</option>
+                    <option value="cpu">cpu（省显存，解码慢些）</option>
+                  </select>
+                </div>
+                <div class="moss-line">
+                  <label>参考音频目录</label><input type="text" id="ttsRefsDir" style="width:520px" title="放参考音频的目录（mp3 / wav / flac 均可）">
+                </div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="ttsSavePaths">保存路径</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="genPanelTagger" style="display:none">
+          <div class="sub-tabs">
+            <button class="sub-tab on" data-tagger-view="gen">参数与打标</button>
+            <button class="sub-tab" data-tagger-view="env">环境与模型</button>
+          </div>
+
+          <div id="taggerViewGen">
+            <div class="rh-block">
+              <h4>输入（单个图片，或一个目录——目录只取一层，不递归）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <input type="text" id="taggerInput" style="width:520px" title="待打标的图片完整路径，或一个图片目录" placeholder="D:\图片\某一张.png 或 D:\图片\某个目录">
+                  <button class="btn-mini" id="taggerPickImage">选图片</button>
+                  <button class="btn-mini" id="taggerPickDir">选目录</button>
+                </div>
+                <div class="moss-line">
+                  <label>模型</label><span class="path" id="taggerModelLine" title="模型固定为 EVA02-Large（索引里只有这一套）">WD EVA02-Large Tagger v3</span>
+                  <label class="moss-chk" title="把结果写进与图片同名的 .txt（rating / general / characters 三行）"><input type="checkbox" id="taggerWriteText"> 落 txt</label>
+                </div>
+                <div class="moss-line">
+                  <label title="通用标签阈值：官方默认 0.35；调高更保守（标签更少更准）">通用阈值</label><input type="number" id="taggerGeneralThreshold" step="0.05" min="0" max="1">
+                  <label title="角色标签阈值：官方默认 0.85；调低更容易认出角色（也更爱瞎猜）">角色阈值</label><input type="number" id="taggerCharacterThreshold" step="0.05" min="0" max="1">
+                  <label title="推理设备：auto 有 CUDA 就用 CUDA，否则 CPU">设备</label>
+                  <select id="taggerDevice" title="auto = 有 CUDA 就用；cpu = 强制 CPU（慢但不占显存）">
+                    <option value="auto">auto</option>
+                    <option value="cuda">cuda</option>
+                    <option value="cpu">cpu</option>
+                  </select>
+                </div>
+                <div class="moss-line">
+                  <label class="moss-chk" title="通用标签改用 MCut 自适应阈值（按本图概率分布自己切一刀，阈值滑杆随之失效）"><input type="checkbox" id="taggerGeneralMcut"> 通用用 MCut</label>
+                  <label class="moss-chk" title="角色标签改用 MCut 自适应阈值（下限 0.15）"><input type="checkbox" id="taggerCharacterMcut"> 角色用 MCut</label>
+                </div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="taggerSave">保存参数</button>
+                  <button class="btn-primary" id="taggerGenerate">打标</button>
+                  <button class="btn-mini" id="taggerStop" title="把常驻引擎停掉（显存还回去；这批作废）">停止引擎</button>
+                  <span class="path" id="taggerJobLine">—</span>
+                </div>
+
+                <details class="moss-help">
+                  <summary>参数说明（每个选项是什么效果 / 什么时候该改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>这是在干什么</b>——把图片反推成 Danbooru 标签：分级（general / sensitive / questionable / explicit）、角色名、以及一堆通用描述标签（1girl / long_hair / blue_eyes…）。产出的标签串可以直接粘进文生图的提示词框。</div>
+                    <div class="moss-help-item"><b>输入</b>——给一张图就打一张；给目录就把目录里（一层）所有图片挨个打一遍。结果里每张图都带缩略图与命中标签；勾了「落 txt」会额外在图片同目录写一份同名 .txt。</div>
+                    <div class="moss-help-item"><b>模型</b>——固定 <em>EVA02-Large</em>（数据集 v3，0.3B 参数，标签截至 2024-02-28），索引里只有这一套。模型存在 ComfyUI 的 <code>models\onnx\wd-tagger\eva02-large\</code> 下，软件不打包权重；不在位时到「环境与模型」页一键下载。</div>
+                    <div class="moss-help-item"><b>通用阈值</b>（默认 0.35，官方口径）——通用标签的入选线。<br>调高（0.5+）：只留很有把握的标签，串更短更干净；调低（0.2）：标签更多更全，但会混进噪声（模型瞎编的细节）。<br>建议先 0.35 看一遍，嫌少往 0.3 走、嫌多往 0.45 走。</div>
+                    <div class="moss-help-item"><b>角色阈值</b>（默认 0.85，官方口径）——角色名的入选线，故意定得很高：角色词表有几十万个名字，阈值低了几乎每张图都能「认」出几个角色。<br>调低（0.6~0.7）：更容易认出冷门角色，误认概率同步上升。一般不用动。</div>
+                    <div class="moss-help-item"><b>MCut</b>（默认关）——不用固定阈值，改成按「本图概率分布的最大间隔」自己切一刀。好处是每张图都能自适应（该多的多、该少的少）；坏处是不可复现、跨图结果不可比。<br>批量整理素材时建议开；要严格可对照时关掉用固定阈值。角色组开 MCut 会自动加下限 0.15。</div>
+                    <div class="moss-help-item"><b>设备</b>（默认 auto）——auto 有 CUDA 就走 GPU；CPU 也能跑，ComfyUI 正在出图时用 CPU 可以避免抢显存。</div>
+                    <div class="moss-help-item"><b>落 txt</b>（默认开）——在图片同目录写一份同名 .txt，三行：rating / general / characters。不想污染原目录就关掉，结果仍在面板里。</div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>结果</h4>
+              <div class="rh-list" id="taggerJob"></div>
+              <div id="taggerItems"></div>
+            </div>
+          </div>
+
+          <div id="taggerViewEnv" style="display:none">
+            <div class="sub-head">
+              <button class="btn-mini" id="taggerReload">重新检测</button>
+              <span class="spacer"></span>
+              <span class="path" id="taggerEnvLine">检测中…</span>
+            </div>
+
+            <div class="rh-block">
+              <h4>环境（解释器 / onnxruntime / numpy / Pillow / 权重）</h4>
+              <div class="rh-list" id="taggerEnv"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>模型（软件只带索引，权重按需下载到 ComfyUI）</h4>
+              <div id="taggerModels"></div>
+              <div class="rh-list" id="taggerDownloads"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1494,8 +1695,9 @@
       document.getElementById("capHint").textContent = hints[cap] || "";
       try { window.localStorage.setItem(CAP_KEY, cap); } catch (e) { /* 忽略 */ }
       if (cap === "rh") { loadRh(); }
-      if (cap === "moss") { loadMoss(); }
+      if (cap === "moss") { setGen(genId); }
       startMossPoller();
+      startTtsPoller();
     }
 
     function setCap(next) {
@@ -1788,6 +1990,8 @@
     // ---- 本地生成：生成器页签（一个生成功能一个页签；新增生成器往这里加一项 + 一个面板）----
     const LOCAL_GENS = [
       { id: "moss", name: "MOSS-Image", note: "文生图 / 图生图 · 8 步加速" },
+      { id: "tts", name: "依田芳乃 TTS", note: "日语语音合成 · 零样本音色克隆" },
+      { id: "tagger", name: "WD 打标", note: "图片反推 Danbooru 标签" },
     ];
     let genId = "moss";
 
@@ -1804,6 +2008,15 @@
     function setGen(id) {
       genId = id;
       renderGenTabs();
+      const mossPanel = document.getElementById("genPanelMoss");
+      const ttsPanel = document.getElementById("genPanelTts");
+      const taggerPanel = document.getElementById("genPanelTagger");
+      if (mossPanel) { mossPanel.style.display = id === "moss" ? "block" : "none"; }
+      if (ttsPanel) { ttsPanel.style.display = id === "tts" ? "block" : "none"; }
+      if (taggerPanel) { taggerPanel.style.display = id === "tagger" ? "block" : "none"; }
+      if (id === "tts") { loadTts(); startTtsPoller(); }
+      if (id === "moss") { loadMoss(); startMossPoller(); }
+      if (id === "tagger") { loadTagger(); startTaggerPoller(); }
     }
 
     // 生成器内部的子签：参数与出图（主面）/ 环境与依赖（内核 / 插件 / 显卡 / 权重下载）
@@ -1813,7 +2026,7 @@
       if (!gen || !env) { return; }
       gen.style.display = view === "env" ? "none" : "block";
       env.style.display = view === "env" ? "block" : "none";
-      for (const tab of document.querySelectorAll(".sub-tab")) {
+      for (const tab of document.querySelectorAll("#genPanelMoss .sub-tab")) {
         tab.classList.toggle("on", tab.dataset.mossView === view);
       }
     }
@@ -2087,14 +2300,460 @@
       }, 2500);
     }
 
+    // ---- 本地生成（依田芳乃 TTS）：文本 / 参考音频 / 参数 / 出音 ----
+    // 后端是常驻 worker（基座 + 声码器 + LoRA 只加载一次），所以第一句慢、之后快；状态靠 /api/tts/live 轮询。
+    let ttsData = null;
+    let ttsTimer = null;
+
+    function setTtsView(view) {
+      const gen = document.getElementById("ttsViewGen");
+      const env = document.getElementById("ttsViewEnv");
+      if (!gen || !env) { return; }
+      gen.style.display = view === "env" ? "none" : "block";
+      env.style.display = view === "env" ? "block" : "none";
+      for (const tab of document.querySelectorAll("#genPanelTts .sub-tab")) {
+        tab.classList.toggle("on", tab.dataset.ttsView === view);
+      }
+    }
+
+    function ttsCfg() {
+      return (ttsData && ttsData.config) || {};
+    }
+
+    async function loadTts() {
+      try {
+        ttsData = await fetch("/api/tts", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        ttsData = null;
+        document.getElementById("ttsEnvLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      fillTtsForm();
+      renderTts();
+    }
+
+    function fillTtsForm() {
+      const cfg = ttsCfg();
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) { el.value = value; }
+      };
+
+      set("ttsText", cfg.text || "");
+      set("ttsCaption", cfg.caption || "");
+      set("ttsSteps", cfg.steps || 40);
+      set("ttsSeed", cfg.seed === undefined ? -1 : cfg.seed);
+      set("ttsDurationScale", cfg.durationScale === undefined ? 1 : cfg.durationScale);
+      set("ttsSeconds", cfg.seconds ? cfg.seconds : "");
+      set("ttsPrecision", cfg.precision || "bf16");
+      set("ttsRunMode", cfg.runMode || "small");
+      set("ttsLargeBaseModel", cfg.largeBaseModel || "");
+      set("ttsLargeInt8BaseModel", cfg.largeInt8BaseModel || "");
+      set("ttsLargeLoraDir", cfg.largeLoraDir || "");
+      set("ttsCodecDevice", cfg.codecDevice || "cuda");
+      set("ttsPythonPath", cfg.pythonPath || "");
+      set("ttsRepoDir", cfg.repoDir || "");
+      set("ttsBaseModel", cfg.baseModel || "");
+      set("ttsCodecWeights", cfg.codecWeights || "");
+      set("ttsLoraDir", cfg.loraDir || "");
+      set("ttsRefsDir", cfg.refsDir || "");
+      document.getElementById("ttsUseLora").checked = cfg.useLora !== false;
+      document.getElementById("ttsNoRef").checked = !!cfg.noRef;
+      renderTtsRefs();
+    }
+
+    function renderTtsRefs() {
+      const box = document.getElementById("ttsRefs");
+      if (!box) { return; }
+      const list = (ttsData && ttsData.refs) || [];
+      const picked = ttsCfg().refs || [];
+      const useAll = picked.length === 0;
+      if (list.length === 0) {
+        box.innerHTML = '<span class="path">参考目录里没有音频——到「环境与依赖」里改路径</span>';
+        return;
+      }
+
+      box.innerHTML = list.map(r =>
+        '<label class="moss-chk" title="' + rhText(r.name) + " · " + mossBytes(r.bytes) + '">'
+        + '<input type="checkbox" data-tts-ref="' + rhText(r.name) + '"'
+        + ((useAll || picked.indexOf(r.name) >= 0) ? " checked" : "") + "> "
+        + rhText(r.name) + "</label>"
+      ).join("");
+    }
+
+    function renderTts() {
+      if (!ttsData) { return; }
+      const env = ttsData.env || {};
+      const engine = ttsData.engine || {};
+      const job = ttsData.job || {};
+      const cfg = ttsCfg();
+      const plan = ttsData.plan || {};
+
+      document.getElementById("ttsPlanLine").textContent = plan.label
+        ? plan.label + " · 精度 " + plan.precision + " · 声码器 " + plan.codecDevice
+        : "—";
+
+      document.getElementById("ttsEnvLine").textContent = (env.canGenerate ? "可生成" : "前置条件不足")
+        + " · " + (plan.label || "跑法未定")
+        + " · 引擎 " + (engine.state || "stopped")
+        + (engine.device ? " · " + engine.device : "")
+        + " · 参考音频 " + (env.refCount || 0) + " 段"
+        + " · 产物 " + (ttsData.outDir || "—");
+
+      const rows = [];
+      const row = (label, ok, text) =>
+        '<div class="rh-item"><span class="grow">' + rhText(label) + "</span>"
+        + '<span class="' + (ok ? "rh-dim" : "rh-bad") + '" title="' + rhText(text) + '">' + rhText(text) + "</span></div>";
+
+      rows.push(row("跑法", true, plan.label || "—"));
+      rows.push(row("解释器", env.pythonOk, cfg.pythonPath || "未配置"));
+      rows.push(row("Irodori-TTS 仓库", env.repoOk, cfg.repoDir || "未配置"));
+      rows.push(row("基座模型", env.baseModelOk, plan.baseModel || cfg.baseModel || "未配置"));
+      rows.push(row("声码器（DACVAE 32dim）", env.codecOk, (cfg.codecWeights || "未配置")
+        + (plan.codecDevice ? " · 跑在 " + plan.codecDevice : "")));
+      rows.push(row("LoRA 适配器", env.loraOk, plan.loraDir || cfg.loraDir || "未配置"));
+      rows.push(row("精度", true, plan.precision || cfg.precision || "bf16"));
+      rows.push(row("参考音频", (env.refCount || 0) > 0, (cfg.refsDir || "未配置") + " · " + (env.refCount || 0) + " 段"));
+      rows.push(row("常驻引擎", engine.state === "ready" || engine.state === "busy",
+        (engine.state || "stopped") + (engine.message ? " · " + engine.message : "")));
+      if (engine.torch) {
+        rows.push(row("内核", true, "torch " + engine.torch + (engine.cuda ? " · CUDA 可用" : " · 仅 CPU")));
+      }
+      for (const blocker of (env.blockers || [])) {
+        rows.push(row("缺", false, blocker));
+      }
+      document.getElementById("ttsEnv").innerHTML = rows.join("");
+
+      const jobRows = [];
+      jobRows.push('<div class="rh-item"><span class="grow">' + rhText(job.state || "idle")
+        + " · " + rhText(job.message || "还没有任务") + "</span>"
+        + '<span class="rh-dim">' + (job.seed !== undefined && job.seed >= 0 ? "种子 " + job.seed : "")
+        + (job.audioSeconds ? " · " + job.audioSeconds + " 秒音频" : "")
+        + (job.elapsedSeconds ? " · 耗时 " + job.elapsedSeconds + " 秒" : "") + "</span></div>");
+      if (job.textPreview) {
+        jobRows.push('<div class="rh-item"><span class="grow rh-dim">' + rhText(job.textPreview) + "</span></div>");
+      }
+      document.getElementById("ttsJob").innerHTML = jobRows.join("");
+      document.getElementById("ttsJobLine").textContent = (job.state || "idle") + " · " + (job.message || "—");
+
+      const audios = [];
+      if (job.file && job.state === "done") {
+        audios.push('<audio controls style="width:100%;margin:6px 0" src="/api/tts/audio?name='
+          + encodeURIComponent(job.file) + "&t=" + Date.now() + '"></audio>');
+      }
+      document.getElementById("ttsAudios").innerHTML = audios.join("");
+
+      const outs = (ttsData.outputs || []).map(o =>
+        '<div class="rh-item"><span class="grow">' + rhText(o.name) + "</span>"
+        + '<span class="rh-dim">' + rhText(o.at) + " · " + mossBytes(o.bytes) + "</span>"
+        + '<audio controls preload="none" style="height:26px" src="/api/tts/audio?name=' + encodeURIComponent(o.name) + '"></audio>'
+        + "</div>"
+      );
+      document.getElementById("ttsOutputs").innerHTML = outs.join("")
+        || '<div class="rh-item"><span class="grow rh-dim">还没有产物</span></div>';
+    }
+
+    function ttsCollect() {
+      const refs = [];
+      for (const box of document.querySelectorAll("#ttsRefs input[data-tts-ref]")) {
+        if (box.checked) { refs.push(box.getAttribute("data-tts-ref")); }
+      }
+
+      const cfg = ttsCfg();
+      return {
+        text: document.getElementById("ttsText").value,
+        caption: document.getElementById("ttsCaption").value,
+        refs: refs,
+        noRef: document.getElementById("ttsNoRef").checked,
+        steps: Math.round(mossNum("ttsSteps", 40)),
+        seed: Math.round(mossNum("ttsSeed", -1)),
+        durationScale: mossNum("ttsDurationScale", 1),
+        seconds: mossNum("ttsSeconds", 0),
+        precision: document.getElementById("ttsPrecision").value,
+        runMode: document.getElementById("ttsRunMode").value,
+        codecDevice: document.getElementById("ttsCodecDevice").value,
+        largeBaseModel: document.getElementById("ttsLargeBaseModel").value || cfg.largeBaseModel || "",
+        largeInt8BaseModel: document.getElementById("ttsLargeInt8BaseModel").value || cfg.largeInt8BaseModel || "",
+        largeLoraDir: document.getElementById("ttsLargeLoraDir").value || cfg.largeLoraDir || "",
+        device: cfg.device || "cuda",
+        useLora: document.getElementById("ttsUseLora").checked,
+        pythonPath: document.getElementById("ttsPythonPath").value || cfg.pythonPath || "",
+        repoDir: document.getElementById("ttsRepoDir").value || cfg.repoDir || "",
+        baseModel: document.getElementById("ttsBaseModel").value || cfg.baseModel || "",
+        codecWeights: document.getElementById("ttsCodecWeights").value || cfg.codecWeights || "",
+        loraDir: document.getElementById("ttsLoraDir").value || cfg.loraDir || "",
+        refsDir: document.getElementById("ttsRefsDir").value || cfg.refsDir || ""
+      };
+    }
+
+    async function ttsSave(silent) {
+      const data = await rhPost("/api/tts/config", ttsCollect());
+      if (!data || !data.ok) { toast("保存失败：" + ((data && data.error) || "未知")); return false; }
+      if (ttsData) { ttsData.config = data.config; }
+      if (!silent) { toast("参数已保存"); }
+      return true;
+    }
+
+    async function ttsGenerate() {
+      if (!(await ttsSave(true))) { return; }
+      const data = await rhPost("/api/tts/generate", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      if (data.job && ttsData) { ttsData.job = data.job; renderTts(); }
+      startTtsPoller();
+    }
+
+    // 只在「本地生成 → 依田芳乃 TTS」页签且确实有在途任务时轮询
+    function startTtsPoller() {
+      if (ttsTimer) { return; }
+      ttsTimer = window.setInterval(async () => {
+        if (cap !== "moss" || genId !== "tts") { return; }
+        const job = (ttsData && ttsData.job) || {};
+        const engine = (ttsData && ttsData.engine) || {};
+        const busyJob = job.state === "submitted" || job.state === "running";
+        const busyEngine = engine.state === "starting";
+        if (!busyJob && !busyEngine) { return; }
+
+        try {
+          const live = await fetch("/api/tts/live", { cache: "no-store" }).then(r => r.json());
+          if (!ttsData) { ttsData = {}; }
+          const wasBusy = job.state === "submitted" || job.state === "running";
+          ttsData.job = live.job;
+          ttsData.engine = live.engine;
+          renderTts();
+          if (wasBusy && live.job && live.job.state === "done") { await loadTts(); }
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 2500);
+    }
+
+    // ---- 本地生成（WD Tagger 打标）：输入 / 参数 / 结果 ----
+    // 后端是常驻 worker（onnxruntime 会话按模型缓存），状态靠 /api/tagger/live 轮询。
+    let taggerData = null;
+    let taggerTimer = null;
+
+    function setTaggerView(view) {
+      const gen = document.getElementById("taggerViewGen");
+      const env = document.getElementById("taggerViewEnv");
+      if (!gen || !env) { return; }
+      gen.style.display = view === "env" ? "none" : "block";
+      env.style.display = view === "env" ? "block" : "none";
+      for (const tab of document.querySelectorAll("#genPanelTagger .sub-tab")) {
+        tab.classList.toggle("on", tab.dataset.taggerView === view);
+      }
+    }
+
+    function taggerCfg() {
+      return (taggerData && taggerData.config) || {};
+    }
+
+    async function loadTagger() {
+      try {
+        taggerData = await fetch("/api/tagger", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        taggerData = null;
+        document.getElementById("taggerEnvLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      fillTaggerForm();
+      renderTagger();
+    }
+
+    function fillTaggerForm() {
+      const cfg = taggerCfg();
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) { el.value = value; }
+      };
+
+      set("taggerInput", cfg.inputPath || "");
+      set("taggerGeneralThreshold", cfg.generalThreshold === undefined ? 0.35 : cfg.generalThreshold);
+      set("taggerCharacterThreshold", cfg.characterThreshold === undefined ? 0.85 : cfg.characterThreshold);
+      set("taggerDevice", cfg.device || "auto");
+      document.getElementById("taggerWriteText").checked = cfg.writeText !== false;
+      document.getElementById("taggerGeneralMcut").checked = !!cfg.generalMcut;
+      document.getElementById("taggerCharacterMcut").checked = !!cfg.characterMcut;
+
+      const model = ((taggerData && taggerData.models) || [])[0];
+      if (model) {
+        document.getElementById("taggerModelLine").textContent =
+          model.title + (model.ready ? "" : "（未下载）");
+      }
+    }
+
+    function renderTagger() {
+      if (!taggerData) { return; }
+      const env = taggerData.env || {};
+      const engine = taggerData.engine || {};
+      const job = taggerData.job || {};
+      const cfg = taggerCfg();
+
+      document.getElementById("taggerEnvLine").textContent = (env.canGenerate ? "可打标" : "前置条件不足")
+        + " · 引擎 " + (engine.state || "stopped")
+        + (env.onnxRuntimeVersion ? " · onnxruntime " + env.onnxRuntimeVersion : "")
+        + " · 模型 EVA02-Large";
+
+      const rows = [];
+      const row = (label, ok, text) =>
+        '<div class="rh-item"><span class="grow">' + rhText(label) + "</span>"
+        + '<span class="' + (ok ? "rh-dim" : "rh-bad") + '" title="' + rhText(text) + '">' + rhText(text) + "</span></div>";
+
+      rows.push(row("解释器（python_embeded）", env.pythonOk, (taggerData.comfyRoot || "未配置") + " 的上级 python_embeded"));
+      rows.push(row("onnxruntime", env.onnxRuntimeOk, env.onnxRuntimeVersion || "不在位"));
+      rows.push(row("numpy", env.numpyOk, env.numpyOk ? "在位" : "不在位"));
+      rows.push(row("Pillow（PIL）", env.pillowOk, env.pillowOk ? "在位" : "不在位"));
+      rows.push(row("权重（model.onnx）", env.modelOk, (env.modelPath || "未配置") + " · " + mossBytes(env.modelBytes)));
+      rows.push(row("标签表（selected_tags.csv）", env.labelsOk, (env.labelsPath || "未配置") + " · " + mossBytes(env.labelsBytes)));
+      rows.push(row("常驻引擎", engine.state === "ready" || engine.state === "busy",
+        (engine.state || "stopped") + (engine.message ? " · " + engine.message : "")));
+      if (engine.onnxRuntime) {
+        rows.push(row("执行提供器", true, engine.providers || "—"));
+      }
+      if (taggerData.configError) {
+        rows.push(row("配置读写", false, taggerData.configError));
+      }
+      for (const blocker of (env.blockers || [])) {
+        rows.push(row("缺", false, blocker));
+      }
+      document.getElementById("taggerEnv").innerHTML = rows.join("");
+
+      const modelHtml = ((taggerData.models) || []).map(m => {
+        const files = (m.files || []).map(f =>
+          '<div class="rh-item"><span class="grow">　' + rhText(f.title) + " · " + mossBytes(f.bytes) + "</span>"
+          + '<span class="' + (f.present ? "rh-dim" : "rh-bad") + '" title="' + rhText(f.path) + '">'
+          + (f.present ? "在位" : "缺") + (f.actualBytes ? " · " + mossBytes(f.actualBytes) : "") + "</span>"
+          + (f.present ? "" : '<button class="btn-mini" data-tagger-file="' + rhText(f.id) + '">下这个文件</button>')
+          + "</div>"
+        ).join("");
+        return '<div class="rh-item"><span class="grow"><b>' + rhText(m.title) + "</b> · " + rhText(m.note) + "</span>"
+          + '<span class="' + (m.ready ? "rh-dim" : "rh-bad") + '">' + mossBytes(m.bytes) + "</span>"
+          + (m.ready ? "" : '<button class="btn-mini" data-tagger-model="' + rhText(m.id) + '">下整套</button>')
+          + "</div>" + files;
+      }).join("");
+      document.getElementById("taggerModels").innerHTML = modelHtml
+        || '<div class="rh-item"><span class="grow rh-dim">索引为空</span></div>';
+
+      const downRows = ((taggerData.downloads) || []).map(d => {
+        const pct = d.expectedBytes > 0 ? Math.round(d.doneBytes * 100 / d.expectedBytes) : 0;
+        return '<div class="rh-item"><span class="grow">' + rhText(d.title) + " · " + rhText(d.state)
+          + " · " + mossBytes(d.doneBytes) + (d.expectedBytes ? " / " + mossBytes(d.expectedBytes) + "（" + pct + "%）" : "")
+          + (d.speedBps ? " · " + mossBytes(Math.round(d.speedBps)) + "/s" : "")
+          + (d.source ? " · " + rhText(d.source) : "") + "</span>"
+          + '<span class="rh-dim" title="' + rhText(d.targetPath) + '">' + rhText(d.message) + "</span>"
+          + ((d.state === "queued" || d.state === "running")
+            ? '<button class="btn-mini" data-tagger-cancel="' + rhText(d.id) + '">取消</button>' : "")
+          + "</div>";
+      });
+      document.getElementById("taggerDownloads").innerHTML = downRows.join("")
+        || '<div class="rh-item"><span class="grow rh-dim">还没有下载任务</span></div>';
+
+      const jobRows = [];
+      jobRows.push('<div class="rh-item"><span class="grow">' + rhText(job.state || "idle")
+        + " · " + rhText(job.message || "还没有任务") + "</span>"
+        + '<span class="rh-dim">' + (job.total ? (job.done || 0) + " / " + job.total + " 张" : "")
+        + (job.elapsedSeconds ? " · 耗时 " + job.elapsedSeconds + " 秒" : "") + "</span></div>");
+      for (const failed of (job.failed || [])) {
+        jobRows.push('<div class="rh-item"><span class="grow rh-bad">' + rhText(failed) + "</span></div>");
+      }
+      document.getElementById("taggerJob").innerHTML = jobRows.join("");
+      document.getElementById("taggerJobLine").textContent = (job.state || "idle") + " · " + (job.message || "—");
+
+      const items = (job.items || []).slice().reverse().map(it => {
+        const chars = (it.characters || []).map(c => rhText(c.name) + " " + (c.score * 100).toFixed(0) + "%").join("、");
+        const ratings = (it.ratings || []).map(r => rhText(r.name) + " " + (r.score * 100).toFixed(0) + "%").join("、");
+        const url = "/api/tagger/image?path=" + encodeURIComponent(it.path);
+        return '<div class="moss-shot">'
+          + '<img src="' + url + '" style="max-width:220px;border-radius:6px" title="' + rhText(it.path) + '">'
+          + '<div class="path" style="font-size:11px">' + rhText(it.file) + " · " + it.seconds + " 秒</div>"
+          + '<div style="font-size:11px"><b>分级</b> ' + rhText(it.rating || "—") + (ratings ? '<br><span class="rh-dim">' + ratings + "</span>" : "") + "</div>"
+          + (chars ? '<div style="font-size:11px"><b>角色</b> ' + chars + "</div>" : "")
+          + '<textarea readonly style="width:100%;min-height:60px;font-size:11px" title="直接粘进提示词框">' + rhText(it.generalText) + "</textarea>"
+          + '<div style="font-size:11px">' + (it.general || []).length + " 个通用标签"
+          + (it.textFile ? " · 已落 " + rhText(it.textFile) : "") + "</div>"
+          + "</div>";
+      });
+      document.getElementById("taggerItems").innerHTML = items.join("")
+        || '<div class="rh-item"><span class="grow rh-dim">还没有结果</span></div>';
+    }
+
+    function taggerCollect() {
+      const cfg = taggerCfg();
+      return {
+        modelId: cfg.modelId || "",
+        inputPath: document.getElementById("taggerInput").value,
+        generalThreshold: mossNum("taggerGeneralThreshold", 0.35),
+        characterThreshold: mossNum("taggerCharacterThreshold", 0.85),
+        generalMcut: document.getElementById("taggerGeneralMcut").checked,
+        characterMcut: document.getElementById("taggerCharacterMcut").checked,
+        writeText: document.getElementById("taggerWriteText").checked,
+        device: document.getElementById("taggerDevice").value,
+        comfyRoot: cfg.comfyRoot || ""
+      };
+    }
+
+    async function taggerSave(silent) {
+      const data = await rhPost("/api/tagger/config", taggerCollect());
+      if (!data || !data.ok) { toast("保存失败：" + ((data && data.error) || "未知")); return false; }
+      if (taggerData) { taggerData.config = data.config; }
+      if (!silent) { toast("参数已保存"); }
+      return true;
+    }
+
+    async function taggerGenerate() {
+      if (!(await taggerSave(true))) { return; }
+      const data = await rhPost("/api/tagger/generate", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      if (data.job && taggerData) { taggerData.job = data.job; renderTagger(); }
+      startTaggerPoller();
+    }
+
+    async function taggerPick(kind) {
+      const data = await rhPost("/api/tagger/pick", { kind: kind });
+      if (!data) { return; }
+      if (!data.ok) { toast("选择失败：" + (data.error || "未知")); return; }
+      if (data.path) { document.getElementById("taggerInput").value = data.path; }
+    }
+
+    // 只在「本地生成 → WD 打标」页签且确实有在途任务 / 下载时轮询
+    function startTaggerPoller() {
+      if (taggerTimer) { return; }
+      taggerTimer = window.setInterval(async () => {
+        if (cap !== "moss" || genId !== "tagger") { return; }
+        const job = (taggerData && taggerData.job) || {};
+        const engine = (taggerData && taggerData.engine) || {};
+        const busyJob = job.state === "submitted" || job.state === "running";
+        const busyEngine = engine.state === "starting";
+        const busyDown = ((taggerData && taggerData.downloads) || []).some(d => d.state === "queued" || d.state === "running");
+        if (!busyJob && !busyEngine && !busyDown) { return; }
+
+        try {
+          const live = await fetch("/api/tagger/live", { cache: "no-store" }).then(r => r.json());
+          if (!taggerData) { taggerData = {}; }
+          const wasBusy = job.state === "submitted" || job.state === "running";
+          taggerData.job = live.job;
+          taggerData.engine = live.engine;
+          taggerData.downloads = live.downloads;
+          renderTagger();
+          if (wasBusy && live.job && live.job.state === "done") { await loadTagger(); }
+          if (busyDown && !((live.downloads || []).some(d => d.state === "queued" || d.state === "running"))) { await loadTagger(); }
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 2000);
+    }
+
     document.getElementById("capTabMoss").onclick = () => setCap("moss");
     renderGenTabs();
     document.getElementById("genTabs").onclick = (ev) => {
       const btn = ev.target.closest("[data-gen]");
       if (btn) { setGen(btn.dataset.gen); }
     };
-    for (const tab of document.querySelectorAll(".sub-tab")) {
+    for (const tab of document.querySelectorAll("#genPanelMoss .sub-tab")) {
       tab.onclick = () => setMossView(tab.dataset.mossView);
+    }
+    for (const tab of document.querySelectorAll("#genPanelTts .sub-tab")) {
+      tab.onclick = () => setTtsView(tab.dataset.ttsView);
+    }
+    for (const tab of document.querySelectorAll("#genPanelTagger .sub-tab")) {
+      tab.onclick = () => setTaggerView(tab.dataset.taggerView);
     }
     document.getElementById("mossSeedRandom").onclick = () => {
       document.getElementById("mossSeed").value = -1;
@@ -2125,6 +2784,64 @@
       if (!data) { return; }
       toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
       await loadMoss();
+    };
+
+    // 依田芳乃 TTS——参数 / 出音 / 环境
+    document.getElementById("ttsSeedRandom").onclick = () => {
+      document.getElementById("ttsSeed").value = -1;
+      toast("种子已设为随机（每次合成都不一样）");
+    };
+    document.getElementById("ttsReload").onclick = loadTts;
+    document.getElementById("ttsSave").onclick = () => ttsSave(false);
+    document.getElementById("ttsSavePaths").onclick = () => ttsSave(false);
+    // 换跑法立刻落盘——引擎按新基座重载，面板上的生效行同步刷新
+    document.getElementById("ttsRunMode").onchange = async () => {
+      if (await ttsSave(true)) {
+        toast("跑法已切换：" + document.getElementById("ttsRunMode").selectedOptions[0].textContent);
+        await loadTts();
+      }
+    };
+    document.getElementById("ttsGenerate").onclick = ttsGenerate;
+    document.getElementById("ttsStop").onclick = async () => {
+      const data = await rhPost("/api/tts/stop", {});
+      toast((data && data.message) || "已停引擎");
+      await loadTts();
+    };
+    document.getElementById("ttsOpenOut").onclick = async () => {
+      const data = await rhPost("/api/tts/open-out", {});
+      if (data && !data.ok) { toast("打开失败：" + (data.error || "未知")); }
+    };
+
+    // WD 打标——输入 / 打标 / 环境
+    document.getElementById("taggerReload").onclick = loadTagger;
+    document.getElementById("taggerSave").onclick = () => taggerSave(false);
+    document.getElementById("taggerGenerate").onclick = taggerGenerate;
+    document.getElementById("taggerPickImage").onclick = () => taggerPick("image");
+    document.getElementById("taggerPickDir").onclick = () => taggerPick("dir");
+    document.getElementById("taggerStop").onclick = async () => {
+      const data = await rhPost("/api/tagger/stop", {});
+      toast((data && data.message) || "已停引擎");
+      await loadTagger();
+    };
+    document.getElementById("taggerModels").onclick = async (e) => {
+      const fileBtn = e.target.closest("[data-tagger-file]");
+      if (fileBtn) {
+        const data = await rhPost("/api/tagger/download", { id: fileBtn.getAttribute("data-tagger-file"), kind: "file" });
+        if (data) { toast((data.ok ? "✅ " : "❌ ") + (data.message || "")); await loadTagger(); }
+        return;
+      }
+
+      const modelBtn = e.target.closest("[data-tagger-model]");
+      if (modelBtn) {
+        const data = await rhPost("/api/tagger/download", { id: modelBtn.getAttribute("data-tagger-model"), kind: "model" });
+        if (data) { toast((data.ok ? "✅ " : "❌ ") + (data.message || "")); await loadTagger(); }
+      }
+    };
+    document.getElementById("taggerDownloads").onclick = async (e) => {
+      const cancel = e.target.closest("[data-tagger-cancel]");
+      if (!cancel) { return; }
+      const data = await rhPost("/api/tagger/download/cancel", { id: cancel.getAttribute("data-tagger-cancel") });
+      if (data) { toast(data.message || "已请求取消"); await loadTagger(); }
     };
 
     // 依赖区事件委托——列表重建后绑定依然有效

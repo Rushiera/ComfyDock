@@ -25,3 +25,14 @@ obj/
 .vs/
 *.user
 CatTemp/
+
+# 随软件走的推理运行时（irodori-tts 代码 + 它自己的 venv）——大文件，不入库
+/runtime/irodori-tts/.venv/
+/runtime/irodori-tts/**/__pycache__/
+/runtime/irodori-tts/.git/
+/runtime/irodori-tts/
+
+# 发布过程产物（exe 同级的运行时配套文件）——只入库 exe 本体
+/ComfyDock.dll
+/ComfyDock.deps.json
+/ComfyDock.runtimeconfig.json
