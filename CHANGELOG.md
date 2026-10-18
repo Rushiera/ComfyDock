@@ -4,6 +4,10 @@
 
 | 日期 | 版本 | 变更 |
 |:--|:--|:--|
+| 2026-10-18 | v0.26 | **内核升级（MOSS 前置条件打通）**——本机整合包 ComfyUI 由 `0.3.64` 升到 **`v0.41.0`**（分支 `moss-kernel`，旧版留在 `pre-moss-kernel` 可随时切回）；新增 comfy-kitchen / comfy-aimdo / av 19 / simpleeval / blake3 / PyOpenGL / comfy-angle 与新版前端包。实测 `EmptyFlux2LatentImage` 与 `MOSSImageUNETLoader` 双双 200（插件已加载），24 个自定义节点包照旧加载；已知副作用：audiocraft 要求 `av==11`，被 0.41 的 `av>=17` 顶掉 |
+| 2026-10-18 | v0.26 | 显存模式口径修订——推荐一律「按需放进显卡」：`normalvram` 不传参数（0.41 已移除 `--normalvram`，传了起不来），只有 `--lowvram` / `--highvram` 加参数；逐层搬运降级为手动选项 |
+| 2026-10-18 | v0.26 | **本地生成（MOSS-Image）**——能力板块第三页签：依赖索引（17 条文件 / 5 套方案：int8 组合 · bf16 · Base · 官方 diffusers 目录 · 8 步 DMD 加速 LoRA）+ 按显存推荐方案与显存模式 + 串行下载器（hf-mirror / HF / 魔搭 三源回退、Range 断点续传、`.part` → 原子落位、速度 / 取消）+ 插件一键安装（仓库 zip 只解 `comfyui/moss-image`，官方示例工作流同时放进 ComfyUI 的 workflows 目录）+ 生成（`/prompt` → `/history` → `/view` 收图落 `out\moss\`；50 步 / CFG 3 / Shift 5 / Euler / sgm_uniform · 结构增强 SLG skip 22 · 8 步加速 DMD · LoRA · Hires 像素放大第二遍 · 图生图 · 中断 · 进度）。**软件本体不装模型**：模型仍走本机 ComfyUI 的地址与模型目录，索引与下载方式留在软件里——ComfyUI 哪天没了，掉的只是要重下的大文件依赖 |
+| 2026-10-18 | v0.26 | 重启链修复（**历次同形故障收口**）——新实例改用原生 `CreateProcess` + `CREATE_NEW_CONSOLE` 拉起（系统另开控制台，不继承本进程的）：此前 `Process.Start` / `UseShellExecute = true` / `cmd /c start` 三种写法都挂在同一个控制台上，本进程退出时控制台关闭、新实例被一并结束（v0.16 / v0.18 / v0.22 / v0.23 / v0.24 / v0.25 记的「两进程全消失」都是这一个根因）。真机复验：连点两次重启 pid 28928 → 35116 单进程存活；接管有 15–20 秒等待 |
 | 2026-10-12 | v0.25 | 线上识别换号阈值与回传刷新——账号挑选改「推测剩余 ≥ 20」（原「> 0」，会一路推到额度用尽）；任务回传成功后顺带刷新该账号快照（余额 / 花费与站点对齐；同账号已在刷新队列里则合并） |
 | 2026-10-11 | v0.24 | 线上生成（文本口径 · 定稿）——面板「生成」工作区：本地图片 + 提示词送上 RunningHub 生成工作流；云端尾巴输出无损 PNG 的 base64 文本 + 随机种子文本，软件侧还原成 PNG 并以**随机种子命名**（`out\<工作区id>\<种子>.png`），两个 txt 不留。全程不依赖本机 ComfyUI、不起外部进程 |
 | 2026-10-11 | v0.24 | 额度概览接口——`GET /api/summary` 回合计推测剩余 + 最早刷新时刻 |

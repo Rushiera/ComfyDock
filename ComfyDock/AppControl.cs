@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 
@@ -52,30 +53,48 @@ public static class AppControl
             }
         }
 
-        // [段2] 命令行参数沿用本次启动（--port / --data 等一并带上）；端口占用交给新实例的启动守卫处理
+        // [段2] 用原生 CreateProcess + CREATE_NEW_CONSOLE 起新实例——🔴 新进程必须**自带一个新控制台**：
+        // 继承本进程控制台时，本进程一退出（重启 = 700 ms 后停机）那个控制台随之关闭，
+        // Windows 把挂在同一控制台上的新实例一并结束（现象：回执「已拉起新实例」→ 随后端口无人监听、
+        // 进程表里也没有新实例）。实测（2026-10-18）三条路只有这条活：
+        // ① Process.Start（UseShellExecute=false）→ 继承控制台，重启后必死；
+        // ② UseShellExecute=true / `cmd /c start`（隐藏窗口）→ 仍挂在同一个控制台上，重启后同样死；
+        // ③ CreateProcess + CREATE_NEW_CONSOLE → 系统新开控制台，连点重启都活着。
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = exePath,
-                WorkingDirectory = AppContext.BaseDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = false,
-            };
-
+            string commandLine = "\"" + exePath + "\"";
             for (int i = from; i < args.Length; i++)
             {
-                psi.ArgumentList.Add(args[i]);
+                string arg = args[i];
+                commandLine += " " + (arg.IndexOf(' ') >= 0 ? "\"" + arg + "\"" : arg);
             }
 
-            Process? child = Process.Start(psi);
-            if (child is null)
+            var startup = new StartupInfo();
+            startup.cb = Marshal.SizeOf<StartupInfo>();
+
+            bool started = CreateProcess(
+                null,
+                commandLine,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                false,
+                CreateNewConsole,
+                IntPtr.Zero,
+                AppContext.BaseDirectory,
+                ref startup,
+                out ProcessInformation process);
+
+            if (!started)
             {
-                message = "新实例没有起来（Process.Start 返回空）";
+                message = "拉起新实例失败：CreateProcess 错误码 " + Marshal.GetLastWin32Error();
                 return false;
             }
 
-            message = "已拉起新实例（进程 " + child.Id + "，映像 " + Path.GetFileName(exePath) + "）";
+            // 句柄用完即关——进程本身继续跑，句柄不关会漏
+            CloseHandle(process.hProcess);
+            CloseHandle(process.hThread);
+
+            message = "已拉起新实例（进程 " + process.dwProcessId + "，映像 " + Path.GetFileName(exePath) + " · 新开控制台）";
             return true;
         }
         catch (Exception ex)
@@ -177,4 +196,109 @@ public static class AppControl
             slotNewer,
         };
     }
+    /// <summary>CreateProcess 启动标志——新进程另开一个控制台，不继承本进程的（重启链的唯一正解）。</summary>
+    private const uint CreateNewConsole = 0x00000010;
+    /// <summary>STARTUPINFO（kernel32 结构体——字段顺序与 Win32 一致，不能删字段）。</summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo
+    {
+        /// <summary>结构体字节数（调用前必须填）。</summary>
+        public int cb;
+
+        /// <summary>保留字段。</summary>
+        public string? lpReserved;
+
+        /// <summary>桌面名（空 = 继承）。</summary>
+        public string? lpDesktop;
+
+        /// <summary>控制台窗口标题。</summary>
+        public string? lpTitle;
+
+        /// <summary>窗口位置 X。</summary>
+        public int dwX;
+
+        /// <summary>窗口位置 Y。</summary>
+        public int dwY;
+
+        /// <summary>窗口宽。</summary>
+        public int dwXSize;
+
+        /// <summary>窗口高。</summary>
+        public int dwYSize;
+
+        /// <summary>字符缓冲区宽。</summary>
+        public int dwXCountChars;
+
+        /// <summary>字符缓冲区高。</summary>
+        public int dwYCountChars;
+
+        /// <summary>填充属性。</summary>
+        public int dwFillAttribute;
+
+        /// <summary>启动标志。</summary>
+        public int dwFlags;
+
+        /// <summary>显示方式。</summary>
+        public short wShowWindow;
+
+        /// <summary>保留。</summary>
+        public short cbReserved2;
+
+        /// <summary>保留。</summary>
+        public IntPtr lpReserved2;
+
+        /// <summary>标准输入句柄。</summary>
+        public IntPtr hStdInput;
+
+        /// <summary>标准输出句柄。</summary>
+        public IntPtr hStdOutput;
+
+        /// <summary>标准错误句柄。</summary>
+        public IntPtr hStdError;
+    }
+    /// <summary>PROCESS_INFORMATION（kernel32 结构体）。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation
+    {
+        /// <summary>进程句柄。</summary>
+        public IntPtr hProcess;
+
+        /// <summary>主线程句柄。</summary>
+        public IntPtr hThread;
+
+        /// <summary>进程 id。</summary>
+        public int dwProcessId;
+
+        /// <summary>主线程 id。</summary>
+        public int dwThreadId;
+    }
+    /// <summary>起一个进程（kernel32 原生入口——只有它能指定「另开控制台」）。</summary>
+    /// <param name="lpApplicationName">可执行文件（空 = 从命令行解析）。</param>
+    /// <param name="lpCommandLine">完整命令行。</param>
+    /// <param name="lpProcessAttributes">进程安全属性（空 = 默认）。</param>
+    /// <param name="lpThreadAttributes">线程安全属性（空 = 默认）。</param>
+    /// <param name="bInheritHandles">是否继承句柄。</param>
+    /// <param name="dwCreationFlags">创建标志。</param>
+    /// <param name="lpEnvironment">环境块（空 = 继承）。</param>
+    /// <param name="lpCurrentDirectory">工作目录。</param>
+    /// <param name="lpStartupInfo">启动信息。</param>
+    /// <param name="lpProcessInformation">进程信息（出参）。</param>
+    /// <returns>是否成功。</returns>
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string? lpApplicationName,
+        string lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string? lpCurrentDirectory,
+        ref StartupInfo lpStartupInfo,
+        out ProcessInformation lpProcessInformation);
+    /// <summary>关句柄（进程起来后把手柄放掉，进程本身继续跑）。</summary>
+    /// <param name="handle">句柄。</param>
+    /// <returns>是否成功。</returns>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
 }

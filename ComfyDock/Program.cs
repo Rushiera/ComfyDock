@@ -16,6 +16,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ComfyDock.Collect;
 using ComfyDock.Local;
+using ComfyDock.Moss;
 using ComfyDock.RunningHub;
 using ComfyDock.Shortcut;
 using ComfyDock.Store;
@@ -112,12 +113,15 @@ public static class Program
             options.RhOutDir);
         rh.Start();
 
+        // [段3b] 本地生成（MOSS-Image）——依赖索引 / 下载 / 插件 / 生成，全部走本机 ComfyUI 的 HTTP API
+        var moss = new MossService(options.LocalComfyRoot, options.LocalComfyUrl, options.DataDir, options.MossOutDir);
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:" + options.Port);
 
         WebApplication app = builder.Build();
-        MapEndpoints(app, options, store, service, hub, gateway, local, rh);
+        MapEndpoints(app, options, store, service, hub, gateway, local, rh, moss);
 
         await app.StartAsync().ConfigureAwait(false);
 
@@ -144,6 +148,7 @@ public static class Program
     /// <param name="gateway">CDP 会话入口。</param>
     /// <param name="local">本地 ComfyUI 入口。</param>
     /// <param name="rh">线上识别服务。</param>
+    /// <param name="moss">本地生成（MOSS-Image）服务。</param>
     private static void MapEndpoints(
         WebApplication app,
         AppOptions options,
@@ -152,7 +157,8 @@ public static class Program
         BrowserHub hub,
         CdpGateway gateway,
         LocalComfy local,
-        RhService rh)
+        RhService rh,
+        MossService moss)
     {
         string webRoot = Path.Combine(app.Environment.ContentRootPath, "Web", "wwwroot");
         if (!Directory.Exists(webRoot))
@@ -701,6 +707,119 @@ public static class Program
             string message = await rh.CancelAsync(id, ct).ConfigureAwait(false);
             return Results.Json(new { ok = true, message }, JsonOptions);
         });
+
+        // 本地生成（MOSS-Image）——能力板块的第三个页签：依赖索引 / 下载 / 插件 / 生成
+        app.MapGet("/api/moss", async (CancellationToken ct) =>
+        {
+            return Results.Json(await moss.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/moss/live", () =>
+        {
+            // 轻量轮询面——只回任务 / 下载 / 插件状态，不重探环境（nvidia-smi 不进热路径）
+            return Results.Json(new
+            {
+                job = moss.Job(),
+                downloads = moss.Downloads(),
+                plugin = moss.Plugin,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/config", (MossConfig request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
+            }
+
+            MossConfig saved = moss.UpdateConfig(request);
+            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/download", (MossDownloadRequest request) =>
+        {
+            string plan = request?.Plan ?? "";
+            string fileId = request?.FileId ?? "";
+            if (plan.Length > 0)
+            {
+                (int queued, System.Collections.Generic.List<string> notes) = moss.DownloadPlan(plan);
+                return Results.Json(new { ok = queued > 0, queued, notes }, JsonOptions);
+            }
+
+            if (fileId.Length > 0)
+            {
+                (bool ok, string note) = moss.DownloadFile(fileId);
+                return Results.Json(new { ok, queued = ok ? 1 : 0, notes = new[] { note } }, JsonOptions);
+            }
+
+            return Results.Json(new { ok = false, error = "缺 plan 或 fileId" }, JsonOptions, statusCode: 400);
+        });
+
+        app.MapPost("/api/moss/download/cancel", (MossFileRequest request) =>
+        {
+            string fileId = request?.FileId ?? "";
+            if (fileId.Length == 0)
+            {
+                return Results.Json(new { ok = false, error = "缺 fileId" }, JsonOptions, statusCode: 400);
+            }
+
+            bool ok = moss.CancelDownload(fileId);
+            return Results.Json(new { ok, message = ok ? "已请求取消" : "没有这条在途下载" }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/plugin/install", async (CancellationToken ct) =>
+        {
+            string message = await moss.InstallPluginAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok = moss.Plugin.State == "done", message, state = moss.Plugin.State }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/generate", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await moss.GenerateAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = moss.Job() }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/interrupt", async (CancellationToken ct) =>
+        {
+            string message = await moss.InterruptAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok = true, message }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/engine/restart", async (MossEngineRequest request, CancellationToken ct) =>
+        {
+            string mode = request?.Mode ?? "";
+            (bool ok, string message) = await moss.RestartEngineAsync(mode, ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message }, JsonOptions);
+        });
+
+        app.MapGet("/api/moss/image", (string? name) =>
+        {
+            string path = moss.OutputPath(name ?? "");
+            if (path.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(path, "image/png");
+        });
+
+        app.MapPost("/api/moss/open-out", () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(moss.OutDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = moss.OutDir,
+                    UseShellExecute = true,
+                });
+                return Results.Json(new { ok = true, path = moss.OutDir }, JsonOptions);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
     }
 
     /// <summary>按快捷方式路径找扫描结果。</summary>
@@ -887,3 +1006,16 @@ public sealed record RhSubmitRequest(string? WorkspaceId, string? Path, string? 
 /// <summary>线上识别取消请求体。</summary>
 /// <param name="Id">标识（工作区 id + 音频路径）。</param>
 public sealed record RhCancelRequest(string? Id);
+
+/// <summary>MOSS 下载请求体——给方案（一次下齐）或给单文件 id。</summary>
+/// <param name="Plan">方案 id（int8 / bf16 / base / diffusers / accel）。</param>
+/// <param name="FileId">索引 id（单条下载用）。</param>
+public sealed record MossDownloadRequest(string? Plan, string? FileId);
+
+/// <summary>MOSS 单文件请求体（取消下载用）。</summary>
+/// <param name="FileId">索引 id。</param>
+public sealed record MossFileRequest(string? FileId);
+
+/// <summary>MOSS 引擎重启请求体。</summary>
+/// <param name="Mode">显存模式：lowvram / normalvram / highvram（空 = 用配置里存的）。</param>
+public sealed record MossEngineRequest(string? Mode);

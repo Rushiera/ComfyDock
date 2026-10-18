@@ -241,6 +241,32 @@
     .rh-item .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rh-dim { color: var(--dim); }
     .rh-bad { color: #c0392b; }
+
+    /* 本地生成（MOSS）——能力板块第三页签 */
+    .moss-form { display: flex; flex-direction: column; gap: 6px; }
+
+    .moss-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+    .moss-line label { font-size: 12px; color: var(--dim); }
+
+    .moss-line input[type=number], .moss-line input[type=text], .moss-line select {
+      border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 12px; width: 84px;
+    }
+
+    .moss-line select.wide { width: 260px; }
+
+    .moss-chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink); }
+
+    .moss-bar { height: 4px; background: #eef1f4; border-radius: 2px; overflow: hidden; margin-top: 4px; }
+
+    .moss-bar i { display: block; height: 100%; background: var(--brand); }
+
+    .moss-shots { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+    .moss-shots img {
+      width: 168px; height: 168px; object-fit: cover;
+      border: 1px solid var(--line); border-radius: 8px; background: #fff;
+    }
   </style>
 </head>
 
@@ -270,6 +296,7 @@
         <b>能力板块</b>
         <button class="cap-tab on" id="capTabLocal">本地工作流</button>
         <button class="cap-tab" id="capTabRh">线上识别</button>
+        <button class="cap-tab" id="capTabMoss">本地生成 · MOSS</button>
         <span class="spacer"></span>
         <span class="path" id="capHint">—</span>
       </div>
@@ -303,6 +330,82 @@
         <div class="rh-block">
           <h4>最近事件</h4>
           <div class="rh-list" id="rhEvents"></div>
+        </div>
+      </div>
+
+      <div id="capMoss" style="display:none">
+        <div class="sub-head">
+          <button class="btn-mini" id="mossReload">重新检测</button>
+          <button class="btn-mini" id="mossInstall" title="把 OpenMOSS/MOSS-Image 仓库里的 comfyui/moss-image 装进 custom_nodes">安装插件</button>
+          <button class="btn-mini" id="mossOpenOut">打开产物目录</button>
+          <span class="spacer"></span>
+          <span class="path" id="mossEnvLine">检测中…</span>
+        </div>
+
+        <div class="rh-block">
+          <h4>环境（ComfyUI 内核 / 插件 / 显卡）</h4>
+          <div class="rh-list" id="mossEnv"></div>
+        </div>
+
+        <div class="rh-block">
+          <h4>依赖（软件只带索引，权重按需下载）</h4>
+          <div class="sub-head">
+            <button class="btn-mini" id="mossPlanDownload">一键下载推荐方案</button>
+            <span class="path" id="mossPlanHint">—</span>
+          </div>
+          <div id="mossPlans"></div>
+          <div class="rh-list" id="mossDownloads"></div>
+        </div>
+
+        <div class="rh-block">
+          <h4>参数</h4>
+          <div class="moss-form">
+            <textarea id="mossPrompt" class="ws-prompt" placeholder="正向提示词：自然语言 / Danbooru 标签 / 官方 Layout JSON 都可以"></textarea>
+            <textarea id="mossNegative" class="ws-prompt" style="min-height:38px" placeholder="负向提示词（官方推荐留空）"></textarea>
+            <div class="moss-line">
+              <label>方案</label><select id="mossPlan" class="wide"></select>
+              <label>显存模式</label>
+              <select id="mossVramMode">
+                <option value="">沿用引擎当前</option>
+                <option value="normalvram">按需放进显卡</option>
+                <option value="lowvram">逐层搬运（最省显存）</option>
+                <option value="highvram">全部常驻显卡</option>
+              </select>
+            </div>
+            <div class="moss-line">
+              <label>宽</label><input type="number" id="mossWidth" step="16" min="256" max="2048">
+              <label>高</label><input type="number" id="mossHeight" step="16" min="256" max="2048">
+              <label>步数</label><input type="number" id="mossSteps" min="1" max="100">
+              <label>CFG</label><input type="number" id="mossCfg" step="0.1" min="0" max="20">
+              <label>Shift</label><input type="number" id="mossShift" step="0.1" min="0" max="20">
+            </div>
+            <div class="moss-line">
+              <label>种子</label><input type="number" id="mossSeed" step="1">
+              <label>批次</label><input type="number" id="mossBatch" min="1" max="8">
+              <label>LoRA</label><select id="mossLora" class="wide"></select>
+              <label>权重</label><input type="number" id="mossLoraStrength" step="0.05" min="0" max="2">
+            </div>
+            <div class="moss-line">
+              <label class="moss-chk"><input type="checkbox" id="mossAccel"> 8 步加速（DMD）</label>
+              <label class="moss-chk"><input type="checkbox" id="mossSlg"> 结构增强（SLG 跳过 22 层）</label>
+              <label class="moss-chk"><input type="checkbox" id="mossHires"> Hires 第二遍</label>
+              <label>倍率</label><input type="number" id="mossHiresScale" step="0.1" min="1" max="3">
+              <label>重绘</label><input type="number" id="mossHiresDenoise" step="0.05" min="0.05" max="1">
+            </div>
+            <div class="moss-line">
+              <button class="btn-mini" id="mossSave">保存参数</button>
+              <button class="btn-primary" id="mossGenerate">生成</button>
+              <button class="btn-mini" id="mossInterrupt">中断</button>
+              <button class="btn-mini" id="mossEngineRestart" title="按选中的显存模式重启本机 ComfyUI（会结束该安装目录下的引擎进程）">按显存模式重启引擎</button>
+              <span class="path" id="mossJobLine">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="rh-block">
+          <h4>出图（产物落 out\moss，文件名 = 种子）</h4>
+          <div class="rh-list" id="mossJob"></div>
+          <div class="moss-shots" id="mossShots"></div>
         </div>
       </div>
     </div>
@@ -1292,9 +1395,15 @@
     let cap = loadCap();
 
     function loadCap() {
+      // 深链接优先（`?cap=moss`）——直接打开某个页签，排错与分享都用得上
+      try {
+        const wanted = new URLSearchParams(window.location.search).get("cap");
+        if (wanted === "rh" || wanted === "local" || wanted === "moss") { return wanted; }
+      } catch (e) { /* 没有 URLSearchParams 就退回本地存储 */ }
+
       try {
         const saved = window.localStorage.getItem(CAP_KEY);
-        if (saved === "rh" || saved === "local") { return saved; }
+        if (saved === "rh" || saved === "local" || saved === "moss") { return saved; }
       } catch (e) { /* 本地存储不可用——用默认 */ }
       return "local";
     }
@@ -1302,11 +1411,16 @@
     function applyCap() {
       document.getElementById("capLocal").style.display = cap === "local" ? "block" : "none";
       document.getElementById("capRh").style.display = cap === "rh" ? "block" : "none";
+      document.getElementById("capMoss").style.display = cap === "moss" ? "block" : "none";
       document.getElementById("capTabLocal").classList.toggle("on", cap === "local");
       document.getElementById("capTabRh").classList.toggle("on", cap === "rh");
-      document.getElementById("capHint").textContent = cap === "local" ? "本地 ComfyUI 工作流" : "RunningHub 线上识别";
+      document.getElementById("capTabMoss").classList.toggle("on", cap === "moss");
+      const hints = { local: "本地 ComfyUI 工作流", rh: "RunningHub 线上识别", moss: "本机 ComfyUI 跑 MOSS-Image" };
+      document.getElementById("capHint").textContent = hints[cap] || "";
       try { window.localStorage.setItem(CAP_KEY, cap); } catch (e) { /* 忽略 */ }
       if (cap === "rh") { loadRh(); }
+      if (cap === "moss") { loadMoss(); }
+      startMossPoller();
     }
 
     function setCap(next) {
@@ -1590,6 +1704,313 @@
       toast(data.ok ? ("✅ " + (data.message || "已删除")) : ("❌ " + (data.message || "删除失败")));
       await loadRh();
     }
+
+    // ---- 本地生成（MOSS-Image）：环境 / 依赖索引与下载 / 参数 / 出图 ----
+
+    let mossData = null;
+    let mossTimer = null;
+
+    function mossBytes(n) {
+      if (!n || n <= 0) { return "0 B"; }
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let i = 0;
+      let v = n;
+      while (v >= 1024 && i < units.length - 1) { v = v / 1024; i++; }
+      return (i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + units[i];
+    }
+
+    function mossNum(id, fallback) {
+      const v = parseFloat(document.getElementById(id).value);
+      return isNaN(v) ? fallback : v;
+    }
+
+    async function loadMoss() {
+      try {
+        mossData = await fetch("/api/moss", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        mossData = null;
+        document.getElementById("mossEnvLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      fillMossForm();
+      renderMoss();
+    }
+
+    function fillMossForm() {
+      const cfg = (mossData && mossData.config) || {};
+
+      const planSel = document.getElementById("mossPlan");
+      const plans = ((mossData && mossData.plans) || []).filter(p => p.id !== "accel");
+      planSel.innerHTML = plans.map(p => '<option value="' + rhText(p.id) + '">' + rhText(p.title) + "</option>").join("");
+      if (cfg.plan) { planSel.value = cfg.plan; }
+
+      const loraSel = document.getElementById("mossLora");
+      const loras = (mossData && mossData.loras) || [];
+      loraSel.innerHTML = '<option value="">（不用）</option>'
+        + loras.map(n => '<option value="' + rhText(n) + '">' + rhText(n) + "</option>").join("");
+      if (cfg.loraName) { loraSel.value = cfg.loraName; }
+
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (document.activeElement !== el) { el.value = value; }
+      };
+
+      set("mossVramMode", cfg.vramMode || "");
+      set("mossPrompt", cfg.prompt || "");
+      set("mossNegative", cfg.negative || "");
+      set("mossWidth", cfg.width || 1024);
+      set("mossHeight", cfg.height || 1024);
+      set("mossSteps", cfg.steps || 50);
+      set("mossCfg", cfg.cfg === undefined ? 3 : cfg.cfg);
+      set("mossShift", cfg.shift === undefined ? 5 : cfg.shift);
+      set("mossSeed", cfg.seed === undefined ? -1 : cfg.seed);
+      set("mossBatch", cfg.batch || 1);
+      set("mossLoraStrength", cfg.loraStrength === undefined ? 1 : cfg.loraStrength);
+      set("mossHiresScale", cfg.hiresScale === undefined ? 1.5 : cfg.hiresScale);
+      set("mossHiresDenoise", cfg.hiresDenoise === undefined ? 0.5 : cfg.hiresDenoise);
+      document.getElementById("mossAccel").checked = !!cfg.accel;
+      document.getElementById("mossSlg").checked = cfg.slg !== false;
+      document.getElementById("mossHires").checked = !!cfg.hires;
+    }
+
+    function renderMoss() {
+      if (!mossData) { return; }
+      const env = mossData.env || {};
+
+      document.getElementById("mossEnvLine").textContent = (env.running ? "ComfyUI 运行中" : "ComfyUI 未运行")
+        + " · " + (env.canGenerate ? "可生成" : "前置条件不足")
+        + " · 推荐 " + (mossData.recommendPlan || "int8") + " / " + (mossData.recommendVramMode || "normalvram");
+
+      const rows = [];
+      rows.push('<div class="rh-item"><span class="grow">ComfyUI 内核</span><span class="' + (env.flux2Ok ? "" : "rh-bad") + '">'
+        + rhText(env.kernelVersion || "未知") + (env.flux2Ok ? " · 支持 Flux.2" : " · 缺 Flux.2 支持") + "</span></div>");
+      rows.push('<div class="rh-item"><span class="grow">MOSS 插件</span><span class="' + (env.pluginLoaded ? "" : "rh-bad") + '">'
+        + (env.pluginLoaded ? "已加载" : (env.pluginFilesOk ? "文件在位，未加载" : "未安装")) + "</span></div>");
+      rows.push('<div class="rh-item"><span class="grow">显卡 / 内存 / 盘余</span><span>'
+        + rhText(env.gpuName || "未知") + " · " + Math.round((env.vramMb || 0) / 1024) + "G 显存 · "
+        + Math.round((env.ramMb || 0) / 1024) + "G 内存 · " + mossBytes(env.diskFreeBytes) + " 可用</span></div>");
+      rows.push('<div class="rh-item"><span class="grow">ComfyUI 根目录</span><span class="rh-dim">' + rhText(env.comfyRoot || "—") + "</span></div>");
+
+      const blockers = env.blockers || [];
+      for (const b of blockers) {
+        rows.push('<div class="rh-item"><span class="grow rh-bad">⚠ ' + rhText(b) + "</span></div>");
+      }
+
+      if (mossData.plugin && mossData.plugin.message) {
+        rows.push('<div class="rh-item"><span class="grow rh-dim">插件安装：' + rhText(mossData.plugin.message) + "</span></div>");
+      }
+
+      document.getElementById("mossEnv").innerHTML = rows.join("");
+
+      document.getElementById("mossPlanHint").textContent =
+        "推荐 " + (mossData.recommendPlan || "int8") + " · 显存模式 " + (mossData.recommendVramMode || "normalvram");
+
+      renderMossPlans();
+      renderMossLive();
+    }
+
+    function renderMossPlans() {
+      const box = document.getElementById("mossPlans");
+      const plans = (mossData && mossData.plans) || [];
+      let html = "";
+      for (const p of plans) {
+        html += '<div class="ws"><div class="ws-head">'
+          + '<span class="ws-name">' + rhText(p.title) + "</span>"
+          + '<span class="ws-flow">' + mossBytes(p.bytes) + (p.ready ? " · 已在位" : " · 未下齐") + "</span>"
+          + '<span class="spacer"></span>'
+          + '<button class="btn-mini" data-moss-plan="' + rhText(p.id) + '">下载本方案</button>'
+          + "</div><div class=\"ws-body\">"
+          + '<div class="rh-src">' + rhText(p.note) + "</div>";
+
+        for (const f of (p.files || [])) {
+          html += '<div class="rh-item"><span class="grow" title="' + rhText(f.path) + '">' + rhText(f.title) + "</span>"
+            + '<span class="rh-dim">' + mossBytes(f.bytes) + "</span>"
+            + '<span class="' + (f.present ? "" : "rh-bad") + '">' + (f.present ? "在位" : "缺") + "</span>"
+            + (f.present ? "" : '<button class="btn-mini" data-moss-file="' + rhText(f.id) + '">下载</button>')
+            + "</div>";
+        }
+
+        html += "</div></div>";
+      }
+
+      box.innerHTML = html;
+    }
+
+    function renderMossLive() {
+      if (!mossData) { return; }
+
+      const jobs = mossData.downloads || [];
+      const rows = [];
+      if (jobs.length === 0) {
+        rows.push('<div class="rh-item rh-dim">还没有下载任务。</div>');
+      }
+
+      for (const j of jobs) {
+        const total = j.expectedBytes || 0;
+        const done = j.doneBytes || 0;
+        const pct = total > 0 ? Math.min(100, Math.round(done * 100 / total)) : 0;
+        const speed = j.state === "running" && j.speedBps > 0 ? " · " + mossBytes(j.speedBps) + "/s" : "";
+        rows.push('<div class="rh-item"><span class="grow" title="' + rhText(j.targetPath) + '">'
+          + rhText(j.title) + " <span class=\"rh-dim\">" + mossBytes(done) + " / " + mossBytes(total) + speed + "</span>"
+          + '<div class="moss-bar"><i style="width:' + pct + '%"></i></div></span>'
+          + '<span class="' + (j.state === "error" ? "rh-bad" : "rh-dim") + '">' + rhText(j.state + " " + (j.message || "")) + "</span>"
+          + ((j.state === "queued" || j.state === "running")
+            ? '<button class="btn-mini" data-moss-cancel="' + rhText(j.id) + '">取消</button>' : "")
+          + "</div>");
+      }
+
+      document.getElementById("mossDownloads").innerHTML = rows.join("");
+
+      const job = mossData.job || {};
+      const jobRows = [];
+      jobRows.push('<div class="rh-item"><span class="grow">' + rhText(job.state || "idle") + " · " + rhText(job.message || "还没有任务")
+        + "</span><span class=\"rh-dim\">" + (job.seed !== undefined && job.seed >= 0 ? "种子 " + job.seed : "") + "</span></div>");
+      document.getElementById("mossJob").innerHTML = jobRows.join("");
+      document.getElementById("mossJobLine").textContent = (job.state || "idle") + " · " + (job.message || "—");
+
+      const shots = job.images || [];
+      document.getElementById("mossShots").innerHTML = shots.map(name =>
+        '<a href="/api/moss/image?name=' + encodeURIComponent(name) + '" target="_blank" title="' + rhText(name) + '">'
+        + '<img src="/api/moss/image?name=' + encodeURIComponent(name) + '&t=' + Date.now() + '" alt="' + rhText(name) + '"></a>'
+      ).join("");
+    }
+
+    function mossCollect() {
+      const cfg = (mossData && mossData.config) || {};
+      return {
+        plan: document.getElementById("mossPlan").value,
+        vramMode: document.getElementById("mossVramMode").value,
+        prompt: document.getElementById("mossPrompt").value,
+        negative: document.getElementById("mossNegative").value,
+        width: mossNum("mossWidth", 1024),
+        height: mossNum("mossHeight", 1024),
+        steps: mossNum("mossSteps", 50),
+        cfg: mossNum("mossCfg", 3),
+        shift: mossNum("mossShift", 5),
+        seed: mossNum("mossSeed", -1),
+        batch: mossNum("mossBatch", 1),
+        accel: document.getElementById("mossAccel").checked,
+        accelLora: cfg.accelLora || "MOSS/MOSS-SFT-8step-DMD.safetensors",
+        accelStrength: cfg.accelStrength === undefined ? 1 : cfg.accelStrength,
+        slg: document.getElementById("mossSlg").checked,
+        slgLayers: cfg.slgLayers || "22",
+        loraName: document.getElementById("mossLora").value,
+        loraStrength: mossNum("mossLoraStrength", 1),
+        hires: document.getElementById("mossHires").checked,
+        hiresScale: mossNum("mossHiresScale", 1.5),
+        hiresDenoise: mossNum("mossHiresDenoise", 0.5),
+        inputImage: cfg.inputImage || "",
+        imgDenoise: cfg.imgDenoise === undefined ? 0.6 : cfg.imgDenoise
+      };
+    }
+
+    async function mossSave(silent) {
+      const data = await rhPost("/api/moss/config", mossCollect());
+      if (!data || !data.ok) { toast("保存失败：" + ((data && data.error) || "未知")); return false; }
+      if (mossData) { mossData.config = data.config; }
+      if (!silent) { toast("参数已保存"); }
+      return true;
+    }
+
+    async function mossGenerate() {
+      if (!(await mossSave(true))) { return; }
+      const data = await rhPost("/api/moss/generate", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      if (data.job && mossData) { mossData.job = data.job; renderMossLive(); }
+      startMossPoller();
+    }
+
+    async function mossDownloadPlan(planId) {
+      const data = await rhPost("/api/moss/download", { plan: planId });
+      if (!data) { return; }
+      toast((data.notes && data.notes.length) ? data.notes.join("；") : "没有可下载的条目");
+      await loadMoss();
+    }
+
+    async function mossDownloadFile(fileId) {
+      const data = await rhPost("/api/moss/download", { fileId: fileId });
+      if (!data) { return; }
+      toast((data.notes && data.notes.length) ? data.notes[0] : "已请求下载");
+      await loadMoss();
+    }
+
+    async function mossCancel(fileId) {
+      const data = await rhPost("/api/moss/download/cancel", { fileId: fileId });
+      if (!data) { return; }
+      toast(data.message || (data.ok ? "已请求取消" : "取消失败"));
+      await loadMoss();
+    }
+
+    async function mossInstall() {
+      toast("开始装插件（下载仓库 zip 并只解 comfyui/moss-image）…");
+      const data = await rhPost("/api/moss/plugin/install", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      await loadMoss();
+    }
+
+    // 只在 MOSS 页签且确实有在途任务时轮询，别在后台白转
+    function startMossPoller() {
+      if (mossTimer) { return; }
+      mossTimer = window.setInterval(async () => {
+        if (cap !== "moss") { return; }
+        const job = (mossData && mossData.job) || {};
+        const busyJob = job.state === "submitted" || job.state === "running";
+        const busyDown = ((mossData && mossData.downloads) || []).some(j => j.state === "queued" || j.state === "running");
+        if (!busyJob && !busyDown) { return; }
+
+        try {
+          const live = await fetch("/api/moss/live", { cache: "no-store" }).then(r => r.json());
+          if (mossData) {
+            mossData.job = live.job;
+            mossData.downloads = live.downloads;
+            mossData.plugin = live.plugin;
+          }
+          renderMossLive();
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 2500);
+    }
+
+    document.getElementById("capTabMoss").onclick = () => setCap("moss");
+    document.getElementById("mossReload").onclick = loadMoss;
+    document.getElementById("mossInstall").onclick = mossInstall;
+    document.getElementById("mossSave").onclick = () => mossSave(false);
+    document.getElementById("mossGenerate").onclick = mossGenerate;
+    document.getElementById("mossInterrupt").onclick = async () => {
+      const data = await rhPost("/api/moss/interrupt", {});
+      toast((data && data.message) || "已请求中断");
+    };
+    document.getElementById("mossOpenOut").onclick = async () => {
+      const data = await rhPost("/api/moss/open-out", {});
+      if (data && !data.ok) { toast("打开失败：" + (data.error || "未知")); }
+    };
+    document.getElementById("mossPlanDownload").onclick = () => {
+      const plan = document.getElementById("mossPlan").value;
+      if (!plan) { toast("先选方案"); return; }
+      mossDownloadPlan(plan);
+    };
+    document.getElementById("mossEngineRestart").onclick = async () => {
+      const mode = document.getElementById("mossVramMode").value || "normalvram";
+      if (!window.confirm("按 " + mode + " 重启本机 ComfyUI？\n会结束该安装目录下正在跑的引擎进程，再以这个显存模式起一份。")) { return; }
+      toast("正在按 " + mode + " 重启引擎（最多等 3 分钟）…");
+      const data = await rhPost("/api/moss/engine/restart", { mode: mode });
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      await loadMoss();
+    };
+
+    // 依赖区事件委托——列表重建后绑定依然有效
+    document.getElementById("mossPlans").onclick = (e) => {
+      const fileBtn = e.target.closest("[data-moss-file]");
+      if (fileBtn) { mossDownloadFile(fileBtn.getAttribute("data-moss-file")); return; }
+      const planBtn = e.target.closest("[data-moss-plan]");
+      if (planBtn) { mossDownloadPlan(planBtn.getAttribute("data-moss-plan")); }
+    };
+    document.getElementById("mossDownloads").onclick = (e) => {
+      const cancel = e.target.closest("[data-moss-cancel]");
+      if (cancel) { mossCancel(cancel.getAttribute("data-moss-cancel")); }
+    };
 
     document.getElementById("capTabLocal").onclick = () => setCap("local");
     document.getElementById("capTabRh").onclick = () => setCap("rh");

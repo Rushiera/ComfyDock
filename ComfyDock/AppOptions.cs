@@ -30,6 +30,12 @@ public sealed class AppOptions
     /// <summary>本地 ComfyUI 启动脚本（未运行时一键启动；工作目录取脚本所在目录）。</summary>
     public string LocalComfyLauncher { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\运行.bat";
 
+    /// <summary>本地 ComfyUI 根目录（含 main.py；MOSS 依赖落点与插件安装都以它为准）。</summary>
+    public string LocalComfyRoot { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI";
+
+    /// <summary>本地生成（MOSS）产物落点目录（默认 exe 同级 out\moss）。</summary>
+    public string MossOutDir { get; set; } = "";
+
     /// <summary>本地 ComfyUI 工作流目录（待上传的工作流来源）。</summary>
     public string LocalWorkflowsRoot { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\user\default\workflows";
 
@@ -96,6 +102,12 @@ public sealed class AppOptions
                 case "--local-launcher":
                     options.LocalComfyLauncher = RequireValue(args, ref i, key);
                     break;
+                case "--local-comfy-root":
+                    options.LocalComfyRoot = RequireValue(args, ref i, key);
+                    break;
+                case "--moss-out":
+                    options.MossOutDir = RequireValue(args, ref i, key);
+                    break;
                 case "--concurrency":
                     options.Concurrency = RequireInt(args, ref i, key);
                     break;
@@ -149,6 +161,11 @@ public sealed class AppOptions
         if (string.IsNullOrWhiteSpace(options.RhOutDir))
         {
             options.RhOutDir = Path.Combine(AppContext.BaseDirectory, "out");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.MossOutDir))
+        {
+            options.MossOutDir = Path.Combine(AppContext.BaseDirectory, "out", "moss");
         }
 
         return options;
