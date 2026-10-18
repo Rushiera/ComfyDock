@@ -126,7 +126,7 @@ public static class Program
         // [段3b] 本地生成（MOSS-Image）——依赖索引 / 下载 / 插件 / 生成，全部走本机 ComfyUI 的 HTTP API
         var moss = new MossService(options.LocalComfyRoot, options.LocalComfyUrl, options.DataDir, options.MossOutDir);
 
-        // [段3c] 本地生成（依田芳乃 TTS）——常驻 worker 跑 Irodori-TTS，基座 + 声码器 + LoRA 只加载一次
+        // [段3c] 本地生成（IrodoriTTS）——常驻 worker 跑 Irodori-TTS，基座 + 声码器 + LoRA 只加载一次
         var tts = new TtsService(
             new TtsConfig
             {
@@ -184,7 +184,7 @@ public static class Program
     /// <param name="local">本地 ComfyUI 入口。</param>
     /// <param name="rh">线上识别服务。</param>
     /// <param name="moss">本地生成（MOSS-Image）服务。</param>
-    /// <param name="tts">本地生成（依田芳乃 TTS）服务。</param>
+    /// <param name="tts">本地生成（IrodoriTTS）服务。</param>
     /// <param name="tagger">本地生成（WD Tagger 打标）服务。</param>
     private static void MapEndpoints(
         WebApplication app,
@@ -867,7 +867,7 @@ public static class Program
             }
         });
 
-        // 本地生成（依田芳乃 TTS）——能力板块第三个页签里的第二个生成器：环境 / 配置 / 合成 / 产物
+        // 本地生成（IrodoriTTS）——能力板块第三个页签里的第二个生成器：环境 / 配置 / 合成 / 产物
         app.MapGet("/api/tts", async (CancellationToken ct) =>
         {
             return Results.Json(await tts.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);

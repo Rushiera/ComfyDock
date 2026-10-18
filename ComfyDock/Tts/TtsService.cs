@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 namespace ComfyDock.Tts;
 
 /// <summary>
-/// 本地生成（依田芳乃 TTS）的持久化配置——生成参数 + 这一路要用的路径（路径可在面板里改，落盘 <c>data\tts-config.json</c>）。
+/// 本地生成（IrodoriTTS）的持久化配置——生成参数 + 这一路要用的路径（路径可在面板里改，落盘 <c>data\tts-config.json</c>）。
 /// </summary>
 public sealed class TtsConfig
 {
@@ -134,7 +134,7 @@ public sealed class TtsPlan
                 Precision = "bf16",
                 Device = device,
                 CodecDevice = device,
-                Label = "大模型 int8 量化 · 全 GPU（8 G 卡推荐）",
+                Label = "依田芳乃 · v4-Large int8 · 全 GPU（8 G 卡推荐）",
             };
         }
 
@@ -148,7 +148,7 @@ public sealed class TtsPlan
                 Precision = "bf16",
                 Device = device,
                 CodecDevice = mode == "large" ? "cpu" : device,
-                Label = mode == "large" ? "大模型 v4-Large · 声码器在 CPU" : "大模型 v4-Large · 全 GPU",
+                Label = mode == "large" ? "依田芳乃 · v4-Large bf16 · 声码器在 CPU" : "依田芳乃 · v4-Large bf16 · 全 GPU",
             };
         }
 
@@ -173,7 +173,7 @@ public sealed class TtsPlan
             Precision = precision,
             Device = device,
             CodecDevice = device,
-            Label = "小模型 v4.1-Small · 全 GPU",
+            Label = "依田芳乃 · v4.1-Small · 全 GPU",
         };
     }
 }
@@ -248,7 +248,7 @@ public sealed class TtsEnvSnapshot
 }
 
 /// <summary>
-/// 本地生成板块（依田芳乃 TTS）的服务面——环境探针 + 配置 + 常驻引擎投递 + 产物清单。
+/// 本地生成板块（IrodoriTTS）的服务面——环境探针 + 配置 + 常驻引擎投递 + 产物清单。
 /// <para>与 MOSS-Image 平行：那边走 ComfyUI，这边走 irodori-tts 自己的 venv（常驻 worker，模型只加载一次）。</para>
 /// </summary>
 public sealed class TtsService

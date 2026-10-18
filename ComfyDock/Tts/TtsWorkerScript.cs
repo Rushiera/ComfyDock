@@ -1,7 +1,7 @@
 ﻿namespace ComfyDock.Tts;
 
 /// <summary>
-/// 依田芳乃 TTS worker 的 Python 源码——编译进程序，运行时解到 <c>data\tts\tts_worker.py</c> 再执行。
+/// IrodoriTTS worker 的 Python 源码——编译进程序，运行时解到 <c>data\tts\tts_worker.py</c> 再执行。
 /// <para>它常驻一个进程把 Irodori-TTS 的推理运行时（基座 + 声码器 + LoRA）加载一次，之后每句只跑采样：
 /// 首次加载约 30~60 秒，之后单句十几秒。stdin 每行一个 JSON 请求，stdout 每行一个 JSON 事件。</para>
 /// </summary>
@@ -10,7 +10,7 @@ internal static class TtsWorkerScript
     /// <summary>worker 脚本正文。</summary>
     public const string Source = """
 # -*- coding: utf-8 -*-
-# Irodori-TTS worker（依田芳乃）——常驻进程，运行时只加载一次。
+# Irodori-TTS worker——常驻进程，运行时只加载一次。
 # 协议：stdin 每行一个 JSON 请求，stdout 每行一个 JSON 事件（stdout 被独占，库里的 print 全部改走 stderr）。
 #   请求：{"cmd":"run","id":"..","text":"..","caption":"..","refs":[".."],"noRef":false,
 #          "steps":40,"seed":2026,"durationScale":1.0,"seconds":null,"useLora":true,"out":"D:\\..\\a.wav"}

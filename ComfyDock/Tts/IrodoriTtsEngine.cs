@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 namespace ComfyDock.Tts;
 
 /// <summary>
-/// 常驻 TTS 引擎的运行态——面板照它显示「依田芳乃」这一路的死活。
+/// 常驻 TTS 引擎的运行态——面板照它显示 IrodoriTTS 这一路的死活。
 /// </summary>
 public sealed class TtsEngineState
 {
@@ -47,7 +47,7 @@ public sealed class TtsEngineState
 }
 
 /// <summary>
-/// 依田芳乃（Irodori-TTS）常驻引擎——用 irodori-tts 自己的 venv 跑一个 worker，
+/// Irodori-TTS 常驻引擎——用 irodori-tts 自己的 venv 跑一个 worker，
 /// <para>基座 + 声码器 + LoRA 只加载一次，之后每句只跑采样（首句 30~60 秒，之后十几秒）。</para>
 /// <para>孤儿防护：worker 从 stdin 读请求，父进程消失（含被强杀）即读到 EOF 自行退出，不留占显存的僵尸进程。</para>
 /// </summary>

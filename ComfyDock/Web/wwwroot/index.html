@@ -253,7 +253,7 @@
       border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 12px; width: 84px;
     }
 
-    .moss-line select.wide { width: 260px; }
+    .moss-line select.wide { width: 340px; }
 
     .moss-chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink); }
 
@@ -495,17 +495,21 @@
               <div class="moss-form">
                 <div class="moss-line">
                   <label title="跑法 = 用哪个基座 + 哪个 LoRA + 声码器放哪。小模型 500M 全 GPU 最快；大模型 3.29B 质量更好，但 8 G 卡要把声码器挪到 CPU 才留得出显存">跑法</label>
-                  <select id="ttsRunMode">
-                    <option value="small">小模型 v4.1-Small · 全 GPU（默认，最快）</option>
-                    <option value="large-int8">大模型 v4-Large int8 量化 · 全 GPU（8 G 卡推荐）</option>
-                    <option value="large">大模型 v4-Large bf16 · 声码器在 CPU（8 G 卡会慢，≥12 G 更合适）</option>
-                    <option value="large-gpu">大模型 v4-Large bf16 · 全 GPU（≥12 G 显存）</option>
+                  <select id="ttsRunMode" class="wide">
+                    <option value="small">依田芳乃 · v4.1-Small · 全 GPU（默认，最快）</option>
+                    <option value="large-int8">依田芳乃 · v4-Large int8 · 全 GPU（8 G 卡推荐）</option>
+                    <option value="large">依田芳乃 · v4-Large bf16 · 声码器在 CPU（8 G 卡会慢，≥12 G 更合适）</option>
+                    <option value="large-gpu">依田芳乃 · v4-Large bf16 · 全 GPU（≥12 G 显存）</option>
                     <option value="custom">自定义（用「环境与依赖」里的路径与设备）</option>
                   </select>
                   <span class="path" id="ttsPlanLine">—</span>
                 </div>
                 <textarea id="ttsText" class="ws-prompt" title="要读的日语文本。长文本建议一句一行，标点保留——模型的时长预测按文本长度估总时长" placeholder="こんにちは、わたくしは依田芳乃と申します。"></textarea>
-                <textarea id="ttsCaption" class="ws-prompt" style="min-height:38px" title="风格描述（voice design 条件，可空）。参考音频给的是音色，caption 给的是说话方式" placeholder="风格描述（可选，如「穏やかで柔らかい女性の声」）"></textarea>
+                <div class="moss-line">
+                  <label title="风格描述（voice design 条件，可空，自由文本）——参考音频给的是「谁在说」，风格描述给的是「怎么说」">风格描述</label>
+                  <input type="text" id="ttsCaption" style="width:420px" title="自由文本，不是枚举。下面是常用写法，选中后可再改；留空 = 只用参考音频的音色与默认语气" placeholder="如：穏やかで柔らかい女性の声。ゆったりと、語尾をやさしく伸ばして話す。">
+                </div>
+                <div class="moss-line" id="ttsCaptionChips" style="gap:6px;flex-wrap:wrap"></div>
                 <div class="moss-line">
                   <label title="采样步数：官方口径 40；6~10 步更快但质量降">步数</label><input type="number" id="ttsSteps" min="1" max="200">
                   <label title="留空或 -1 = 每次随机；填数字 = 固定种子">种子</label><input type="number" id="ttsSeed" step="1" placeholder="随机">
@@ -519,7 +523,7 @@
                     <option value="bf16">bf16</option>
                     <option value="fp32">fp32</option>
                   </select>
-                  <label class="moss-chk" title="挂上依田芳乃 LoRA；关掉 = 只用基座（用于对比）"><input type="checkbox" id="ttsUseLora"> 挂 LoRA</label>
+                  <label class="moss-chk" title="挂上当前跑法对应的角色 LoRA；关掉 = 只用基座（用于对比音色）"><input type="checkbox" id="ttsUseLora"> 挂 LoRA</label>
                   <label class="moss-chk" title="不用参考音频（音色会漂到基座的通用音色，一般关着）"><input type="checkbox" id="ttsNoRef"> 不用参考音频</label>
                 </div>
                 <div class="moss-line rh-dim" style="font-size:11px">
@@ -532,6 +536,25 @@
                   <button class="btn-mini" id="ttsStop" title="把常驻引擎停掉（显存还回去；在跑的这一句作废）">停止引擎</button>
                   <span class="path" id="ttsJobLine">—</span>
                 </div>
+
+                <details class="moss-help">
+                  <summary>参数说明（每个选项是什么效果 / 什么时候该改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>这是在干什么</b>——Irodori-TTS 是日语 TTS（RF-DiT + DACVAE 连续隐变量，48 kHz 单声道输出）。三类条件各管一段：<em>文本</em>决定说什么、<em>参考音频</em>决定谁在说（零样本音色克隆）、<em>风格描述</em>决定怎么说。角色 LoRA 再把这套基座往某个具体音色上偏一点。</div>
+                    <div class="moss-help-item"><b>跑法</b>（默认 small）——一次定死「用哪个基座 + 哪个 LoRA + 精度 + 声码器放哪」，不是四个独立开关。三档都是<b>依田芳乃</b>这一套 LoRA（small 线 rank16 / large 线 rank32），区别只在基座大小。<br>· <em>依田芳乃 · v4.1-Small · 全 GPU</em>：500M，显存约 4~5 G，首句加载约 19 秒、单句 13~20 秒，日常首选。<br>· <em>依田芳乃 · v4-Large int8 · 全 GPU</em>：3.29B 压成 int8（3.58 G 权重），8 G 卡实测可用——首句 48~53 秒、单句 30~38 秒，峰值显存约 7.7 G。质量更好，代价是慢一倍多。<br>· <em>依田芳乃 · v4-Large bf16 · 声码器在 CPU</em>：12.25 G 权重按 bf16 上卡约 6.6 G；8 G 卡实测会在采样阶段把显存吃到 7859/8188 MiB，单句两分钟出不来——<b>只有显存富余时再用</b>。<br>· <em>依田芳乃 · v4-Large bf16 · 全 GPU</em>：≥12 G 显存才选，解码最快。<br>· <em>自定义</em>：用「环境与依赖」页里填的路径与声码器设备，换别的角色 / 别的权重 / 做实验时用。<br>切跑法会立即落盘并重启常驻引擎（引擎按「基座 + LoRA + 精度 + 声码器设备」判断要不要重载），所以切一次要等一次加载。</div>
+                    <div class="moss-help-item"><b>依赖从哪来</b>——这一路<b>不再单独装运行时</b>：直接用本机 ComfyUI 的 <code>python_embeded</code>（torch / torchaudio / transformers / peft / dacvae / silentcipher 都在里面，torchao 已补装）。权重与代码也都放在 ComfyUI 目录下：代码在 <code>ComfyUI\irodori-tts\</code>，权重在 <code>ComfyUI\models\TTS\yoshino\</code>。以后重装 / 升级 ComfyUI 时，缺 torchao 就补一条 <code>pip install torchao==0.16.0</code>（仅 int8 跑法需要）。</div>
+                    <div class="moss-help-item"><b>文本</b>（必填）——要读的日语内容。标点保留（模型按标点断句、按时长预测估总长）；一行一句最稳。假名 / 汉字混写都行，读法由模型自己判——生僻人名地名容易读错，写成假名可以强制读音。</div>
+                    <div class="moss-help-item"><b>风格描述</b>（默认空，<b>自由文本不是选项</b>）——模型这一路是 caption 条件（训练时喂的是自然语言描述），所以它吃的是「怎么写」而不是「选哪个」，这也是它没有下拉框的原因。框下面那排是<b>常用写法模板</b>，点一下填进框里，可以再改、可以拼两三条。<br>· 留空：完全靠参考音频的音色 + 参考音频自带的语气。<br>· 写什么会影响什么：嗓音质地（高い / 低い / 柔らかい / ハスキー）、语速节奏（ゆったり / 早口 / 間を取る）、情绪（明るく / 落ち着いた / 照れながら）、距离感（近い距離感 / 電話越し / 囁く）。<br>· 写法：一条 1~2 句就够，越具体越可控；堆太多互相打架的描述（既「囁き」又「元気いっぱい」）会两头不靠。<br>· 和参考音频冲突时：音色（谁）由参考音频主导，语气（怎么说）由风格描述主导——要换音色改参考音频，要换语气改这里。</div>
+                    <div class="moss-help-item"><b>步数</b>（默认 40）——采样步数，官方口径 40。<br>降到 6~10 用 Sway 采样能快，但质量明显下降（这条链路没开 Sway，降步数就是纯掉质量）。超过 40 收益极小，只烧时间。</div>
+                    <div class="moss-help-item"><b>种子</b>（默认 -1 = 随机）——固定数字 + 同样参数 = 同样的音频（实测 int8 档复跑 SHA-256 完全一致）。挑到喜欢的一条，记下种子就能复现；只改一个参数对比效果时尤其有用。</div>
+                    <div class="moss-help-item"><b>时长倍率</b>（默认 1.0）——v4 系列会自己预测输出长度，这个数是在预测结果上再乘一遍：1.1 = 慢 10%（更从容），0.9 = 紧 10%。整体语速偏快偏慢时微调它，别当成「精确时长」用。</div>
+                    <div class="moss-help-item"><b>强制秒数</b>（默认空 = 自动）——填了就直接盖掉时长预测，按这个秒数生成。只在「必须卡进某个时长」时用：填得比文本需要的短会把话压扁甚至吞字，填长了尾巴拖静音。</div>
+                    <div class="moss-help-item"><b>精度</b>（默认 bf16）——bf16 更快更省显存，8 G 卡必选；fp32 数值最稳但显存翻倍，一般只在排查数值异常时试。<b>int8 跑法下这一项被忽略</b>（权重已经是 int8，精度固定 bf16）。</div>
+                    <div class="moss-help-item"><b>挂 LoRA</b>（默认开）——走当前跑法对应的角色 LoRA（small 线 = rank16 500 步，large 线 = rank32 400 步）。关掉 = 只用基座的通用音色，用来对比「LoRA 到底改了多少」。<b>跑法与 LoRA 必须配对</b>（small↔small、large↔large），错配会加载失败。</div>
+                    <div class="moss-help-item"><b>参考音频</b>（默认全选）——零样本音色克隆的输入：参考音频是「谁」，文本是「说什么」。<br>· 多选按勾选顺序拼接，30 秒左右收益最大（训练时就是这么拼的）；只给一段也能用，但相似度略低。<br>· 一段都不勾 = 用目录里全部。<br>· 质量要点：干净、单一说话人、无音乐无噪声；参考里的语气会顺带被学走（想换语气用风格描述压）。<br>· 不要用「不用参考音频」除非就是要听基座通用音色——那时音色会漂，风格描述也能单独生效。</div>
+                    <div class="moss-help-item"><b>停止引擎</b>——常驻引擎会一直占着显存（small 约 4~5 G，int8 大模型约 7.7 G）。要跑 ComfyUI 出图、或者今天不打算再合成，点它把显存还回去；下次「生成」会自动重新加载（small 约 20 秒、int8 约 50 秒）。</div>
+                  </div>
+                </details>
               </div>
             </div>
 
@@ -552,7 +575,7 @@
             </div>
 
             <div class="rh-block">
-              <h4>环境（解释器 / 仓库 / 基座 / 声码器 / LoRA / 参考音频）</h4>
+              <h4>环境（解释器 python_embeded / 仓库 / 基座 / 声码器 / LoRA / 参考音频）</h4>
               <div class="rh-list" id="ttsEnv"></div>
             </div>
 
@@ -560,10 +583,10 @@
               <h4>路径（改完点保存；引擎会按新路径重载，下一句生效）</h4>
               <div class="moss-form">
                 <div class="moss-line">
-                  <label>解释器</label><input type="text" id="ttsPythonPath" style="width:520px" title="irodori-tts 自己的 venv 里的 python.exe（不要用 ComfyUI 的 python_embeded）">
+                  <label>解释器</label><input type="text" id="ttsPythonPath" style="width:520px" title="直接指向本机 ComfyUI 的 python_embeded\python.exe（不再单独装运行时）">
                 </div>
                 <div class="moss-line">
-                  <label>仓库目录</label><input type="text" id="ttsRepoDir" style="width:520px" title="Irodori-TTS 仓库根目录（含 irodori_tts 包与 infer.py）">
+                  <label>仓库目录</label><input type="text" id="ttsRepoDir" style="width:520px" title="Irodori-TTS 仓库根目录（含 irodori_tts 包与 infer.py）——现放 ComfyUI\irodori-tts">
                 </div>
                 <div class="moss-line">
                   <label>基座模型</label><input type="text" id="ttsBaseModel" style="width:520px" title="基座 safetensors（v4.1-Small）；同目录下要有 tokenizer\">
@@ -1990,7 +2013,7 @@
     // ---- 本地生成：生成器页签（一个生成功能一个页签；新增生成器往这里加一项 + 一个面板）----
     const LOCAL_GENS = [
       { id: "moss", name: "MOSS-Image", note: "文生图 / 图生图 · 8 步加速" },
-      { id: "tts", name: "依田芳乃 TTS", note: "日语语音合成 · 零样本音色克隆" },
+      { id: "tts", name: "IrodoriTTS", note: "日语语音合成 · 零样本音色克隆" },
       { id: "tagger", name: "WD 打标", note: "图片反推 Danbooru 标签" },
     ];
     let genId = "moss";
@@ -2300,7 +2323,7 @@
       }, 2500);
     }
 
-    // ---- 本地生成（依田芳乃 TTS）：文本 / 参考音频 / 参数 / 出音 ----
+    // ---- 本地生成（IrodoriTTS）：文本 / 参考音频 / 采样参数 / 产物 ----
     // 后端是常驻 worker（基座 + 声码器 + LoRA 只加载一次），所以第一句慢、之后快；状态靠 /api/tts/live 轮询。
     let ttsData = null;
     let ttsTimer = null;
@@ -2318,6 +2341,39 @@
 
     function ttsCfg() {
       return (ttsData && ttsData.config) || {};
+    }
+
+    // 风格描述是自由文本（模型吃自然语言 caption），下面这排只是常用写法模板——点了填进框，可再改、可拼
+    const TTS_CAPTION_PRESETS = [
+      { label: "穏やかで柔らかい女性", text: "穏やかで柔らかい女性の声。ゆったりと、語尾をやさしく伸ばして話す。" },
+      { label: "落ち着いた高めの女性", text: "落ち着いた高めの女性の声。自然な間を取り、やわらかく話す。" },
+      { label: "明るく元気", text: "明るく元気な女性の声。はきはきと、テンポよく話す。" },
+      { label: "囁くように", text: "近い距離感で、囁くように静かに話す。" },
+      { label: "照れながら", text: "少し照れながら、控えめに、自信なさげに話す。" },
+      { label: "眠そう", text: "眠そうで気だるげに、ゆっくりと話す。" },
+      { label: "可愛らしい高音", text: "可愛らしい高めの女性の声。甘えた口調で話す。" },
+      { label: "凛とした大人", text: "落ち着いた大人の女性。凛とした口調で、丁寧に話す。" },
+      { label: "嬉しそう", text: "嬉しそうに、楽しげに、声を弾ませて話す。" },
+      { label: "寂しげ", text: "寂しげで、少し悲しげな声で、ぽつりぽつりと話す。" },
+    ];
+
+    function renderTtsCaptionChips() {
+      const box = document.getElementById("ttsCaptionChips");
+      if (!box) { return; }
+      box.innerHTML = '<span class="path" style="font-size:11px">常用写法（点了填进上面，可再改）：</span>'
+        + TTS_CAPTION_PRESETS.map((p, i) =>
+          '<button class="btn-mini" data-tts-caption="' + i + '" title="' + rhText(p.text) + '">' + rhText(p.label) + "</button>"
+        ).join("");
+    }
+
+    function ttsApplyCaption(idx) {
+      const preset = TTS_CAPTION_PRESETS[idx];
+      const box = document.getElementById("ttsCaption");
+      if (!preset || !box) { return; }
+      const cur = box.value.trim();
+      // 已有内容就追加，避免刚写一半被冲掉
+      box.value = cur.length === 0 ? preset.text : (cur + " " + preset.text);
+      box.focus();
     }
 
     async function loadTts() {
@@ -2503,7 +2559,7 @@
       startTtsPoller();
     }
 
-    // 只在「本地生成 → 依田芳乃 TTS」页签且确实有在途任务时轮询
+    // 只在「本地生成 → IrodoriTTS」页签且确实有在途任务时轮询
     function startTtsPoller() {
       if (ttsTimer) { return; }
       ttsTimer = window.setInterval(async () => {
@@ -2786,7 +2842,12 @@
       await loadMoss();
     };
 
-    // 依田芳乃 TTS——参数 / 出音 / 环境
+    // IrodoriTTS——参数 / 出音 / 环境
+    renderTtsCaptionChips();
+    document.getElementById("ttsCaptionChips").onclick = (e) => {
+      const btn = e.target.closest("[data-tts-caption]");
+      if (btn) { ttsApplyCaption(Number(btn.getAttribute("data-tts-caption"))); }
+    };
     document.getElementById("ttsSeedRandom").onclick = () => {
       document.getElementById("ttsSeed").value = -1;
       toast("种子已设为随机（每次合成都不一样）");
