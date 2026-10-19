@@ -124,9 +124,10 @@ emit({
     "seconds": round(time.time() - _t0, 1),
 })
 
-# [段4] 设备枚举（含 Voicemeeter VAIO 端点标记）
+# [段4] 设备枚举（含 VB-CABLE 虚拟声卡端点标记）
 def _device_row(idx, info):
     name = str(info.get("name", ""))
+    upper = name.upper()
     return {
         "index": idx,
         "name": name,
@@ -134,7 +135,7 @@ def _device_row(idx, info):
         "maxInput": int(info.get("max_input_channels", 0)),
         "maxOutput": int(info.get("max_output_channels", 0)),
         "defaultSr": int(info.get("default_samplerate", 0) or 0),
-        "vaio": "VAIO" in name.upper(),
+        "cable": "CABLE INPUT" in upper or "CABLE OUTPUT" in upper,
     }
 
 
@@ -600,6 +601,15 @@ class RealtimeHost:
         model, pipeline = ensure_model(model_path)
         self.model_path = model_path
 
+        # 换音色时说话人索引可能超出新模型的说话人数（单说话人模型只有 0）——
+        # 越界会让 emb_g 索引报错、整条流起不来：这里按模型实际人数收敛，并在 started 回执里出声
+        n_spk = max(1, int(getattr(model, "n_spk", 1) or 1))
+        sid = int(params.get("sid", 0) or 0)
+        if sid < 0 or sid >= n_spk:
+            sid = 0
+            params = dict(params)
+            params["sid"] = sid
+
         in_idx = int(dev.get("input", -1))
         out_idx = int(dev.get("output", -1))
         exclusive = bool(dev.get("exclusive", False))
@@ -657,6 +667,7 @@ class RealtimeHost:
         lat["deviceMs"] = round(max(self.stream_latency) * 1000, 1)
         lat["totalMs"] = round(lat["algoMs"] + lat["deviceMs"], 1)
         emit({"ev": "started", "model": os.path.basename(model_path),
+              "sid": sid, "nSpk": n_spk,
               "input": in_idx, "output": out_idx, "exclusive": exclusive,
               "latency": lat, "info": chain.info()})
 

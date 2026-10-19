@@ -262,6 +262,11 @@ public sealed class RvcService
 
         ApplyEnginePaths();
 
+        // 送声驱动（VB-CABLE）：包随软件走（runtime\vbcable），解压落 data\vbcable
+        _vbCable = new VbCableService(
+            Path.Combine(AppContext.BaseDirectory, "runtime", "vbcable"),
+            Path.Combine(dataDir, "vbcable"));
+
         // 实时段初始化（线 3 追加——读 rvc-realtime-config.json 并把路径推给流式 worker）
         InitRealtime(defaults, dataDir);
     }
@@ -1097,8 +1102,11 @@ public sealed class RvcService
     /// <summary>worker 脚本源码（线 2 的 RvcRealtimeWorkerScript 经此注入；空 = 只认盘上脚本）。</summary>
     private string _rtWorkerSource = "";
 
-    /// <summary>Voicemeeter 端点辅助（只做检测 / 运行态 / 一键拉起）。</summary>
-    private readonly VoicemeeterService _voicemeeter = new VoicemeeterService("");
+    /// <summary>VB-CABLE 端点辅助（检测驱动 / 解内置包 / 提权安装——送声给其他软件用的虚拟声卡）。</summary>
+    private readonly VbCableService _vbCable;
+
+    /// <summary>最近一次设备枚举结果（开流前校验配置里的端点还在不在——卸载虚拟声卡后索引会位移）。</summary>
+    private List<RvcHostApiItem> _lastHostApis = new List<RvcHostApiItem>();
 
     /// <summary>实时链状态（面板显示这一路的死活与延迟）。</summary>
     public RvcRealtimeState Realtime
@@ -1147,7 +1155,7 @@ public sealed class RvcService
         }
     }
 
-    /// <summary>实时面板快照——环境 + 配置 + 状态 + 设备区间 + Voicemeeter + 互斥状态。</summary>
+    /// <summary>实时面板快照——环境 + 配置 + 状态 + 设备区间 + 送声驱动（VB-CABLE）+ 互斥状态。</summary>
     /// <param name="ct">取消令牌。</param>
     /// <returns>快照对象（匿名结构，直接序列化给前端）。</returns>
     public Task<object> RealtimeSnapshotAsync(CancellationToken ct)
@@ -1155,7 +1163,7 @@ public sealed class RvcService
         ct.ThrowIfCancellationRequested();
 
         RvcRealtimeEnvSnapshot env = ProbeRealtime();
-        VoicemeeterStatus vm = _voicemeeter.Detect();
+        VbCableStatus cable = _vbCable.Detect();
         RvcRealtimeConfig cfg = RealtimeConfig();
         RvcRealtimeState state = _rtEngine.State;
         bool busy = OfflineBusy;
@@ -1176,7 +1184,7 @@ public sealed class RvcService
             },
             config = cfg,
             state = state,
-            voicemeeter = vm,
+            vbcable = cable,
             offlineBusy = busy,
             models = ListModels(),
             scriptPath = _rtEngine.ScriptPath,
@@ -1223,8 +1231,78 @@ public sealed class RvcService
             return (false, "没选音色模型");
         }
 
+        // 还没枚举过设备：先枚举一次再校验（worker 起好后开流复用同一个进程，成本很小）——
+        // 卸载 / 重装声卡驱动后索引会整体位移，不校验会把声音送到意外的端点上
+        if (_lastHostApis.Count == 0)
+        {
+            (bool devOk, List<RvcHostApiItem> apis, string _) = await RealtimeDevicesAsync(ct).ConfigureAwait(false);
+            if (devOk)
+            {
+                _lastHostApis = apis;
+            }
+        }
+
+        string? missing = MissingEndpoint(cfg);
+        if (missing != null)
+        {
+            return (false, missing);
+        }
+
         ApplyRealtimeEnginePaths();
         return await _rtEngine.StartAsync(cfg, _rtWorkerSource, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>配置里的端点还在不在（按名字比，不按索引——卸载 / 重装声卡驱动后索引会整体位移）。</summary>
+    /// <param name="cfg">实时配置。</param>
+    /// <returns>不在位的人话（都在位或还没枚举过返回 null）。</returns>
+    private string? MissingEndpoint(RvcRealtimeConfig cfg)
+    {
+        List<RvcHostApiItem> apis = _lastHostApis;
+        if (apis.Count == 0)
+        {
+            return null;
+        }
+
+        string? input = MissingOne(apis, cfg.Input, true);
+        if (input != null)
+        {
+            return input;
+        }
+
+        return MissingOne(apis, cfg.Output, false);
+    }
+
+    /// <summary>单个端点的在位判定。</summary>
+    /// <param name="apis">设备枚举结果。</param>
+    /// <param name="device">配置里的端点。</param>
+    /// <param name="wantInput">true = 按输入端判，false = 按输出端判。</param>
+    /// <returns>不在位的人话（在位返回 null）。</returns>
+    private static string? MissingOne(List<RvcHostApiItem> apis, RvcRealtimeDevice device, bool wantInput)
+    {
+        if (device == null)
+        {
+            return null;
+        }
+
+        string name = device.Name ?? "";
+        if (name.Length == 0 || device.Index < 0)
+        {
+            return null;
+        }
+
+        foreach (RvcHostApiItem api in apis)
+        {
+            foreach (RvcDeviceItem item in api.Devices)
+            {
+                if (item.Name == name && (wantInput ? item.In : item.Out))
+                {
+                    return null;
+                }
+            }
+        }
+
+        return (wantInput ? "输入设备「" : "输出设备「") + name
+            + "」已不在位（可能卸载了旧虚拟声卡）——点「刷新设备」重选一个再开流";
     }
 
     /// <summary>停流（worker 保留，下次开流不用重载模型）。</summary>
@@ -1235,9 +1313,7 @@ public sealed class RvcService
         return await _rtEngine.StopStreamAsync(ct).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// 改实时配置：落盘后按字段分流——热更字段直接生效，其余提示重开流。
-    /// </summary>
+    /// <summary>改实时配置：落盘后按字段分流——热更字段直接生效；其余字段在流已开时自动按新配置重开流（换音色 / 设备 / 采样率 / F0 取法 / 精度不必手动操作）。</summary>
     /// <param name="next">新配置。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>(是否成功, 人话, 生效字段, 是否需重开流)。</returns>
@@ -1252,18 +1328,28 @@ public sealed class RvcService
         }
 
         RvcRealtimeConfig before = RealtimeConfig();
+        RvcRealtimeState stateBefore = _rtEngine.State;
         RvcRealtimeConfig saved = SaveRealtimeConfig(next);
         bool needRestart = RealtimeNeedsRestart(before, saved);
 
-        RvcRealtimeState state = _rtEngine.State;
-        if (state.State != "running")
+        // 判活用改前状态——SaveRealtimeConfig 里解释器 / 代码目录 / 模型根 / 设备 / 精度
+        // 任一项变了会先把 worker 停掉；在这里取状态会被误判成「流没在跑」，
+        // 表现为改推理设备 / 半精度后声音直接没了、也没有重开（用户不会想到是参数没生效）
+        bool live = stateBefore.State == "running" || stateBefore.State == "starting";
+        if (!live)
         {
             return (true, "配置已保存（实时流没在跑，下次开流生效）", none, false);
         }
 
         if (needRestart)
         {
-            return (true, "配置已保存——设备 / 采样率 / F0 取法 / 音色 / 精度改了，需重开流才生效", none, true);
+            (bool restarted, string restartMessage) = await RealtimeStartAsync(saved, ct).ConfigureAwait(false);
+            if (!restarted)
+            {
+                return (false, "配置已保存，但按新参数重开流失败：" + restartMessage, none, true);
+            }
+
+            return (true, "已按新参数自动重开流——" + restartMessage, none, true);
         }
 
         (bool ok, string message, List<string> applied) = await _rtEngine
@@ -1284,7 +1370,14 @@ public sealed class RvcService
         }
 
         ApplyRealtimeEnginePaths();
-        return await _rtEngine.DevicesAsync(_rtWorkerSource, ct).ConfigureAwait(false);
+        (bool ok, List<RvcHostApiItem> apis, string message) = await _rtEngine
+            .DevicesAsync(_rtWorkerSource, ct).ConfigureAwait(false);
+        if (ok)
+        {
+            _lastHostApis = apis;
+        }
+
+        return (ok, apis, message);
     }
 
     /// <summary>自检——枚举设备后跑一段正弦进链，回延迟与每块耗时。</summary>
@@ -1323,18 +1416,18 @@ public sealed class RvcService
         _rtEngine.Stop();
     }
 
-    /// <summary>Voicemeeter 检测（安装 / 运行态 / 首选 exe）。</summary>
+    /// <summary>VB-CABLE 检测（驱动装没装 / 内置包在不在位 / 解压出来的安装器在不在）。</summary>
     /// <returns>检测结果。</returns>
-    public VoicemeeterStatus VoicemeeterDetect()
+    public VbCableStatus VbCableDetect()
     {
-        return _voicemeeter.Detect();
+        return _vbCable.Detect();
     }
 
-    /// <summary>一键拉起 Voicemeeter（独立进程，本软件退出不连带杀）。</summary>
-    /// <returns>(是否成功, 人话)。</returns>
-    public (bool Ok, string Message) VoicemeeterLaunch()
+    /// <summary>一键安装 VB-CABLE（解内置包 + 管理员权限跑安装器；装完要重启电脑）。</summary>
+    /// <returns>(是否已发起, 人话)。</returns>
+    public (bool Ok, string Message) VbCableInstall()
     {
-        return _voicemeeter.Launch();
+        return _vbCable.Install();
     }
 
     /// <summary>初始化实时段——读配置、从命令行默认值补路径、把路径推给实时引擎。</summary>
@@ -1706,7 +1799,7 @@ public sealed class RvcService
             copy.Name = src.Name;
         }
 
-        copy.Vaio = src.Vaio;
+        copy.Cable = src.Cable;
         return copy;
     }
 

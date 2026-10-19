@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>ComfyDock.Shell</AssemblyName>
+    <RootNamespace>ComfyDock.Shell</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>0.40</Version>
+
+    <!-- 发布落点：仓库根 shell\（与 ComfyDock.exe 同址，主程序按相对路径拉起） -->
+    <PublishDir>$(MSBuildThisFileDirectory)..\shell\</PublishDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="*" />
+  </ItemGroup>
+
+</Project>

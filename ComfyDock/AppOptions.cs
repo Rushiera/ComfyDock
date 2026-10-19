@@ -4,12 +4,15 @@ using System.IO;
 namespace ComfyDock;
 
 /// <summary>
-/// 命令行选项——全部可覆盖，默认值面向本机现状（D:\done\google + 系统 chrome）。
+/// 命令行选项——全部可覆盖，默认值面向本机现状（账号表 + 系统 chrome）。
 /// </summary>
 public sealed class AppOptions
 {
-    /// <summary>快捷方式所在目录。</summary>
-    public string GoogleRoot { get; set; } = @"D:\done\google";
+    /// <summary>快捷方式所在目录（仅首次迁移账号表时使用——账号源已改为内置账号表）。</summary>
+    public string GoogleRoot { get; set; } = @"D:\Mau\WorkSpace\google";
+
+    /// <summary>套壳浏览器可执行文件（随软件发布在 shell 子目录）。</summary>
+    public string ShellPath { get; set; } = "";
 
     /// <summary>chrome.exe 路径。</summary>
     public string ChromePath { get; set; } = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
@@ -109,6 +112,12 @@ public sealed class AppOptions
     /// <summary>WD Tagger 自检 CLI——给一张图片，跑一遍打标后打印 JSON 并退出；空 = 不起该分支。</summary>
     public string TaggerSelfTest { get; set; } = "";
 
+    /// <summary>采集自检 CLI——给一个账号 id，在套壳里跑一遍采集并打印结果；空 = 不起该分支。</summary>
+    public string CollectSelfTest { get; set; } = "";
+
+    /// <summary>后台刷新 CLI——把所有启用账号刷一遍并落盘（不占端口、不弹窗口）。</summary>
+    public bool RefreshAll { get; set; }
+
     /// <summary>本地 ComfyUI 工作流目录（待上传的工作流来源）。</summary>
     public string LocalWorkflowsRoot { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\user\default\workflows";
 
@@ -142,6 +151,9 @@ public sealed class AppOptions
 
     /// <summary>快照文件完整路径。</summary>
     public string SnapshotPath => Path.Combine(DataDir, "accounts.json");
+
+    /// <summary>账号表文件完整路径（内置账号源）。</summary>
+    public string RegistryPath => Path.Combine(DataDir, "accounts-registry.json");
 
     /// <summary>解析命令行参数。</summary>
     /// <param name="args">原始参数数组。</param>
@@ -253,6 +265,15 @@ public sealed class AppOptions
                 case "--tagger-selftest":
                     options.TaggerSelfTest = RequireValue(args, ref i, key);
                     break;
+                case "--collect-selftest":
+                    options.CollectSelfTest = RequireValue(args, ref i, key);
+                    break;
+                case "--refresh":
+                    options.RefreshAll = true;
+                    break;
+                case "--shell":
+                    options.ShellPath = RequireValue(args, ref i, key);
+                    break;
                 case "--concurrency":
                     options.Concurrency = RequireInt(args, ref i, key);
                     break;
@@ -301,6 +322,11 @@ public sealed class AppOptions
         if (string.IsNullOrWhiteSpace(options.DataDir))
         {
             options.DataDir = Path.Combine(AppContext.BaseDirectory, "data");
+        }
+
+        if (string.IsNullOrWhiteSpace(options.ShellPath))
+        {
+            options.ShellPath = Path.Combine(AppContext.BaseDirectory, "shell", "ComfyDock.Shell.exe");
         }
 
         if (string.IsNullOrWhiteSpace(options.RhOutDir))

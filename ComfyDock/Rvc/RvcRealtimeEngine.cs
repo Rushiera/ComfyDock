@@ -207,15 +207,22 @@ public sealed class RvcRealtimeEngine : IDisposable
             ApplyLatency(node["latency"], 0);
         }
 
+        int actualSid = node != null ? (int)DoubleOf(node, "sid") : config.Sid;
+        int speakerCount = node != null ? (int)DoubleOf(node, "nSpk") : 0;
+        string sidNote = speakerCount > 0 && actualSid != config.Sid
+            ? "；该音色只有 " + speakerCount + " 个说话人，说话人已归 " + actualSid
+            : "";
+
         lock (_gate)
         {
             _state.State = "running";
             _state.SampleRate = sr;
             _state.Bypass = config.Bypass;
+            _state.Model = Path.GetFileName(config.Model);
             _state.StartedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             _state.Message = "实时变声已开流（" + sr + " Hz"
                 + (config.Bypass ? " · 干声直通" : " · 变声")
-                + "）";
+                + "）" + sidNote;
         }
 
         return (true, State.Message);
@@ -365,7 +372,7 @@ public sealed class RvcRealtimeEngine : IDisposable
         string workerSource,
         CancellationToken ct)
     {
-        if (!EnsureScriptOnDisk(workerSource, out string problem))
+        if (!EnsureScriptOnDisk(workerSource, out string problem, out _))
         {
             return (false, State, problem);
         }
@@ -534,13 +541,39 @@ public sealed class RvcRealtimeEngine : IDisposable
         return (true, snapshot, message);
     }
 
-    /// <summary>发送一次请求并等指定事件（同一时刻一个请求）。</summary>
+    /// <summary>请求闸——worker 的等待者是单槽，两个请求并发会互相覆盖（连点下拉换音色时会出现），一律串行。</summary>
+    private readonly SemaphoreSlim _reqGate = new SemaphoreSlim(1, 1);
+
+    /// <summary>发送一次请求并等指定事件（闸内串行：同一时刻只有一个请求占着等待者）。</summary>
     /// <param name="request">请求体。</param>
     /// <param name="expectEv">期望的事件名。</param>
     /// <param name="timeoutMs">超时毫秒。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>(是否成功, 事件节点, 人话)。</returns>
     private async Task<(bool Ok, JsonNode? Node, string Message)> RequestAsync(
+        JsonObject request,
+        string expectEv,
+        int timeoutMs,
+        CancellationToken ct)
+    {
+        await _reqGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await RequestCoreAsync(request, expectEv, timeoutMs, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _reqGate.Release();
+        }
+    }
+
+    /// <summary>请求实现（调用方必须持有 <see cref="_reqGate"/>）。</summary>
+    /// <param name="request">请求体。</param>
+    /// <param name="expectEv">期望的事件名。</param>
+    /// <param name="timeoutMs">超时毫秒。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 事件节点, 人话)。</returns>
+    private async Task<(bool Ok, JsonNode? Node, string Message)> RequestCoreAsync(
         JsonObject request,
         string expectEv,
         int timeoutMs,
@@ -680,10 +713,12 @@ public sealed class RvcRealtimeEngine : IDisposable
     /// <summary>把 worker 脚本写到盘上（不启动进程）；脚本与解释器任一不可用即出声。</summary>
     /// <param name="workerSource">脚本源码（空 = 只查盘上有没有）。</param>
     /// <param name="problem">失败原因。</param>
+    /// <param name="changed">脚本内容与盘上不同（或首次落盘）返回 true。</param>
     /// <returns>可用返回 true。</returns>
-    private bool EnsureScriptOnDisk(string workerSource, out string problem)
+    private bool EnsureScriptOnDisk(string workerSource, out string problem, out bool changed)
     {
         problem = "";
+        changed = false;
         if (_scriptPath.Length == 0)
         {
             problem = "worker 落点不可写（data\\rvc）";
@@ -700,7 +735,13 @@ public sealed class RvcRealtimeEngine : IDisposable
         {
             try
             {
-                File.WriteAllText(_scriptPath, workerSource, new UTF8Encoding(false));
+                // 内容比对：脚本换代而进程还活着时，在跑的 worker 手里仍是旧脚本——由调用方停进程
+                changed = !File.Exists(_scriptPath)
+                    || File.ReadAllText(_scriptPath) != workerSource;
+                if (changed)
+                {
+                    File.WriteAllText(_scriptPath, workerSource, new UTF8Encoding(false));
+                }
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
             {
@@ -724,9 +765,15 @@ public sealed class RvcRealtimeEngine : IDisposable
     /// <returns>可用返回 true。</returns>
     private bool EnsureWorkerReady(string workerSource, out string problem)
     {
-        if (!EnsureScriptOnDisk(workerSource, out problem))
+        if (!EnsureScriptOnDisk(workerSource, out problem, out bool scriptChanged))
         {
             return false;
+        }
+
+        if (scriptChanged && Alive)
+        {
+            // 脚本内容换代——在跑的进程手里还是旧脚本：停掉，下次开流按新脚本起
+            Stop();
         }
 
         if (!Directory.Exists(_repo))
@@ -912,7 +959,7 @@ public sealed class RvcRealtimeEngine : IDisposable
             int index = (int)DoubleOf(row, "index");
             int hostApi = (int)DoubleOf(row, "hostapi");
             string name = StringOf(row, "name");
-            bool vaio = BoolOf(row, "vaio") || VoicemeeterService.IsVaio(name);
+            bool cable = BoolOf(row, "cable") || VbCableService.IsCable(name);
 
             RvcHostApiItem? owner = null;
             for (int j = 0; j < hostApis.Count; j++)
@@ -950,7 +997,7 @@ public sealed class RvcRealtimeEngine : IDisposable
                 {
                     Index = index,
                     Name = name,
-                    Vaio = vaio,
+                    Cable = cable,
                 };
                 owner.Devices.Add(device);
             }
@@ -1030,9 +1077,14 @@ public sealed class RvcRealtimeEngine : IDisposable
 
                 if (ev == RvcRealtimeProtocol.EvStarted)
                 {
+                    string model = StringOf(node, "model");
                     lock (_gate)
                     {
                         _state.State = "running";
+                        if (model.Length > 0)
+                        {
+                            _state.Model = model;
+                        }
                     }
 
                     ApplyLatency(node["latency"], 0);

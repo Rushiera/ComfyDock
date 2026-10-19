@@ -8,7 +8,7 @@
     <AssemblyName>ComfyDock</AssemblyName>
     <RootNamespace>ComfyDock</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.39</Version>
+    <Version>0.41</Version>
 
     <!-- 发布落点：仓库根（双击 ComfyDock.exe 即用），不再单列 dist 目录 -->
     <PublishDir>$(MSBuildThisFileDirectory)..\</PublishDir>

@@ -24,6 +24,9 @@ public sealed class CollectService
     /// <summary>快照存储。</summary>
     private readonly AccountStore _store;
 
+    /// <summary>账号表（内置账号源）。</summary>
+    private readonly AccountRegistryStore _registry;
+
     /// <summary>串行任务队列（采集 / 删除 / 上传共用）。</summary>
     private readonly TaskQueue _tasks = new TaskQueue();
 
@@ -40,11 +43,13 @@ public sealed class CollectService
     /// <param name="options">运行选项。</param>
     /// <param name="collector">单槽位采集器。</param>
     /// <param name="store">快照存储。</param>
-    public CollectService(AppOptions options, Collector collector, AccountStore store)
+    /// <param name="registry">账号表（内置账号源）。</param>
+    public CollectService(AppOptions options, Collector collector, AccountStore store, AccountRegistryStore registry)
     {
         _options = options;
         _collector = collector;
         _store = store;
+        _registry = registry;
         _snapshot = store.Load();
     }
 
@@ -142,6 +147,68 @@ public sealed class CollectService
         }
     }
 
+    /// <summary>按账号表校正快照——新增账号补占位行，已删 / 停用的行移除，显示名与数据目录跟着账号表走。</summary>
+    public void SyncWithRegistry()
+    {
+        List<ShortcutEntry> entries = _registry.ToEntries();
+        lock (_gate)
+        {
+            List<AccountSlot> kept = new List<AccountSlot>();
+            foreach (AccountSlot slot in _snapshot.Accounts)
+            {
+                ShortcutEntry? matched = null;
+                foreach (ShortcutEntry entry in entries)
+                {
+                    if (string.Equals(entry.ShortcutPath, slot.ShortcutPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matched = entry;
+                        break;
+                    }
+                }
+
+                if (matched == null)
+                {
+                    continue;
+                }
+
+                slot.ShortcutName = matched.ShortcutName;
+                slot.ProfileDir = matched.ProfileDir;
+                kept.Add(slot);
+            }
+
+            foreach (ShortcutEntry entry in entries)
+            {
+                bool found = false;
+                foreach (AccountSlot slot in kept)
+                {
+                    if (string.Equals(slot.ShortcutPath, entry.ShortcutPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found)
+                {
+                    continue;
+                }
+
+                kept.Add(new AccountSlot
+                {
+                    ShortcutName = entry.ShortcutName,
+                    ShortcutPath = entry.ShortcutPath,
+                    ProfileDir = entry.ProfileDir,
+                    Status = "unknown",
+                    Error = "等待采集",
+                });
+            }
+
+            _snapshot.Accounts = kept;
+            _snapshot.GeneratedAt = Clock.Now();
+            _store.Save(_snapshot);
+        }
+    }
+
     /// <summary>全量采集入队——等价于把所有行依次「该行刷新」一遍。</summary>
     /// <returns>任务记录。</returns>
     public TaskRecord EnqueueAll()
@@ -155,12 +222,19 @@ public sealed class CollectService
     /// <returns>任务记录；快捷方式不在扫描目录内时返回 null。</returns>
     public TaskRecord? EnqueueOne(string shortcutPath, out string error)
     {
-        ShortcutEntry? target = ShortcutScanner.Scan(_options.GoogleRoot)
-            .FirstOrDefault(entry => string.Equals(entry.ShortcutPath, shortcutPath, StringComparison.OrdinalIgnoreCase));
+        ShortcutEntry? target = null;
+        foreach (ShortcutEntry entry in _registry.ToEntries())
+        {
+            if (string.Equals(entry.ShortcutPath, shortcutPath, StringComparison.OrdinalIgnoreCase))
+            {
+                target = entry;
+                break;
+            }
+        }
 
         if (target is null)
         {
-            error = "该快捷方式不在扫描目录内：" + shortcutPath;
+            error = "该账号不在账号表内：" + shortcutPath;
             return null;
         }
 
@@ -172,7 +246,7 @@ public sealed class CollectService
     /// <returns>任务结果。</returns>
     private async Task<TaskOutcome> RunAllAsync()
     {
-        List<ShortcutEntry> entries = ShortcutScanner.Scan(_options.GoogleRoot);
+        List<ShortcutEntry> entries = _registry.ToEntries();
 
         // [段1] 开进度——面板据此显示 x/y
         lock (_gate)
@@ -190,8 +264,8 @@ public sealed class CollectService
             EnsureSlots(entries);
         }
 
-        // [段2] 逐行采集——并发度由 --concurrency 决定（默认 2）
-        var gate = new SemaphoreSlim(_options.Concurrency);
+        // [段2] 逐行采集——套壳同一时刻只持有一个账号视图，故串行（并发度不再生效）
+        var gate = new SemaphoreSlim(1);
         var runs = new List<Task>();
         foreach (ShortcutEntry entry in entries)
         {
@@ -263,7 +337,7 @@ public sealed class CollectService
         CollectResult outcome;
         try
         {
-            outcome = await _collector.CollectAsync(entry.ProfileDir, CancellationToken.None).ConfigureAwait(false);
+            outcome = await _collector.CollectAsync(entry.ShortcutPath, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

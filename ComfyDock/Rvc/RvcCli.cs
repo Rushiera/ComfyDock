@@ -146,7 +146,7 @@ public static class RvcCli
     }
 
     /// <summary>
-    /// 跑一次实时链自检——Voicemeeter 三态 → 枚举设备 → 3 秒 440 Hz 正弦进实时变声链 → 打印延迟与每块推理耗时。
+    /// 跑一次实时链自检——VB-CABLE 状态 → 枚举设备 → 3 秒 440 Hz 正弦进实时变声链 → 打印延迟与每块推理耗时。
     /// <para>不动麦克风、不落音频；走与面板完全同一条实时引擎代码路径（不是另一份实现）。</para>
     /// </summary>
     /// <param name="outIndexText">输出设备索引（整数；auto / 空 = 第一个 hostapi 的第一个输出）。</param>
@@ -201,23 +201,18 @@ public static class RvcCli
         Console.WriteLine("模型根：" + models);
         Console.WriteLine("音色：" + modelName);
 
-        // [段1] Voicemeeter 三态（未装 / 已装未跑 / 在跑）各出声
-        VoicemeeterStatus vm = service.VoicemeeterDetect();
-        if (!vm.Installed)
+        // [段1] 送声驱动 VB-CABLE（未装 / 已装）各出声
+        VbCableStatus cable = service.VbCableDetect();
+        if (!cable.Installed)
         {
-            Console.WriteLine("Voicemeeter：未安装（" + vm.InstallDir + "）");
+            Console.WriteLine("VB-CABLE：未安装——送声给其他软件要装它（面板「环境与模型」一键装）");
         }
         else
         {
-            if (vm.Running)
-            {
-                Console.WriteLine("Voicemeeter：在跑（" + vm.ProcessName + "）");
-            }
-            else
-            {
-                Console.WriteLine("Voicemeeter：已装未跑（" + vm.ExePath + "）—— 面板可一键拉起");
-            }
+            Console.WriteLine("VB-CABLE：已装（" + cable.DriverPath + "）——CABLE Output 可在别的软件里当麦克风");
         }
+
+        Console.WriteLine("内置安装包：" + (cable.PackageOk ? cable.PackagePath : "不在位（runtime\\vbcable）"));
 
         // [段2] 设备枚举
         (bool devOk, List<RvcHostApiItem> hostApis, string devMessage) = await service
@@ -249,9 +244,9 @@ public static class RvcCli
                     flags = flags + " out";
                 }
 
-                if (dev.Vaio)
+                if (dev.Cable)
                 {
-                    flags = flags + " vaio";
+                    flags = flags + " cable";
                 }
 
                 if (dev.Default)

@@ -16,6 +16,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ComfyDock.Collect;
 using ComfyDock.Local;
+using ComfyDock.Models;
 using ComfyDock.Moss;
 using ComfyDock.Omni;
 using ComfyDock.RunningHub;
@@ -84,6 +85,18 @@ public static class Program
                 options.LocalComfyRoot).ConfigureAwait(false);
         }
 
+        // [段0d2] 采集自检 CLI——账号表迁移 + 套壳采集整链跑一遍后退出（不占端口）
+        if (options.CollectSelfTest.Length > 0)
+        {
+            return await CollectCli.RunAsync(options, options.CollectSelfTest).ConfigureAwait(false);
+        }
+
+        // [段0d3] 后台刷新 CLI——所有启用账号刷一遍并落盘，不弹窗口、不占端口
+        if (options.RefreshAll)
+        {
+            return await RefreshCli.RunAsync(options).ConfigureAwait(false);
+        }
+
         if (options.RvcSelfTest.Length > 0)
         {
             return await RvcCli.RunAsync(
@@ -138,17 +151,22 @@ public static class Program
         }
 
         var store = new AccountStore(options.SnapshotPath);
-        var hub = new BrowserHub(options.ChromePath, Path.Combine(options.DataDir, "browsers.json"));
+        var registry = new AccountRegistryStore(options.RegistryPath, options.DataDir);
 
-        // [段2] 回收上一代实例留下的 headless 残留——它们占着用户目录，会让后续采集直接失败
-        int swept = await hub.SweepResidualHeadlessAsync(options.GoogleRoot, CancellationToken.None).ConfigureAwait(false);
-        if (swept > 0)
+        // [段2] 首次运行：从旧的快捷方式目录迁移账号表（只建一次；已有账号表则原样不动）
+        int migrated = registry.EnsureMigrated(options.GoogleRoot, store.Load());
+        if (migrated > 0)
         {
-            Console.WriteLine("已回收残留 headless 实例 " + swept + " 个");
+            Console.WriteLine("账号表已从快捷方式目录迁移 " + migrated + " 条");
         }
 
+        var hub = new BrowserHub(options.ChromePath, Path.Combine(options.DataDir, "browsers.json"));
         var gateway = new CdpGateway(options.ChromePath, hub);
-        var service = new CollectService(options, new Collector(gateway, options.Url, options.WorkspaceUrl), store);
+        var shell = new ShellClient(options.ShellPath, options.DataDir);
+        var service = new CollectService(options, new Collector(shell, options.Url, options.WorkspaceUrl), store, registry);
+
+        // [段2b] 快照按账号表校正——旧的快捷方式行清掉，新增账号补占位行（启动即对齐，面板不再有幽灵行）
+        service.SyncWithRegistry();
         var local = new LocalComfy(options.LocalComfyUrl, options.LocalComfyLauncher);
 
         // [段3] 线上识别服务——账号复用 accounts.json；后台轮询循环随面板启动
@@ -218,7 +236,7 @@ public static class Program
         builder.WebHost.UseUrls("http://127.0.0.1:" + options.Port);
 
         WebApplication app = builder.Build();
-        MapEndpoints(app, options, store, service, hub, gateway, local, rh, moss, tts, tagger, rvc, omni);
+        MapEndpoints(app, options, store, service, registry, shell, hub, gateway, local, rh, moss, tts, tagger, rvc, omni);
 
         await app.StartAsync().ConfigureAwait(false);
 
@@ -241,6 +259,8 @@ public static class Program
     /// <param name="options">运行选项。</param>
     /// <param name="store">快照存储。</param>
     /// <param name="service">采集服务（含任务队列）。</param>
+    /// <param name="registry">内置账号表。</param>
+    /// <param name="shell">套壳浏览器客户端。</param>
     /// <param name="hub">受控浏览器中心。</param>
     /// <param name="gateway">CDP 会话入口。</param>
     /// <param name="local">本地 ComfyUI 入口。</param>
@@ -255,6 +275,8 @@ public static class Program
         AppOptions options,
         AccountStore store,
         CollectService service,
+        AccountRegistryStore registry,
+        ShellClient shell,
         BrowserHub hub,
         CdpGateway gateway,
         LocalComfy local,
@@ -319,6 +341,8 @@ public static class Program
         app.MapGet("/api/options", () => Results.Json(new
         {
             googleRoot = options.GoogleRoot,
+            registryPath = registry.FilePath,
+            shellPath = options.ShellPath,
             snapshotPath = options.SnapshotPath,
             url = options.Url,
             workspaceUrl = options.WorkspaceUrl,
@@ -372,33 +396,47 @@ public static class Program
             return Results.Json(new { ok = true, message = "面板正在关闭" }, JsonOptions);
         });
 
-        app.MapPost("/api/open-url", async (OpenUrlRequest request, CancellationToken ct) =>
+        app.MapPost("/api/open-url", async (OpenUrlRequest request) =>
         {
             if (request is null || string.IsNullOrWhiteSpace(request.ShortcutPath) || string.IsNullOrWhiteSpace(request.Url))
             {
                 return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = FindTarget(options, request.ShortcutPath);
-            if (target is null || target.ProfileDir.Length == 0)
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
+            if (target is null)
             {
-                return Results.Json(new { ok = false, error = "未解析出该账号的浏览器用户目录" }, JsonOptions, statusCode: 404);
+                return Results.Json(new { ok = false, error = "账号不在账号表内" }, JsonOptions, statusCode: 404);
             }
 
-            return await OpenTabResultAsync(hub, target.ProfileDir, request.Url, ct).ConfigureAwait(false);
+            // [段1] 套壳浏览器前台打开——同一个浏览器既是登录窗口也是采集通道，登录态就地保存
+            try
+            {
+                JsonElement response = await shell.OpenAsync(target.ShortcutPath, request.Url, true, 90000).ConfigureAwait(false);
+                if (!ShellClient.IsOk(response))
+                {
+                    return Results.Json(new { ok = false, error = ShellClient.ErrorText(response) }, JsonOptions, statusCode: 500);
+                }
+
+                return Results.Json(new { ok = true, via = "shell" }, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
         });
 
-        app.MapPost("/api/browser/takeover", async (OpenUrlRequest request, CancellationToken ct) =>
+        app.MapPost("/api/browser/takeover", async (OpenUrlRequest request) =>
         {
             if (request is null || string.IsNullOrWhiteSpace(request.ShortcutPath))
             {
                 return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = FindTarget(options, request.ShortcutPath);
-            if (target is null || target.ProfileDir.Length == 0)
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
+            if (target is null)
             {
-                return Results.Json(new { ok = false, error = "未解析出该账号的浏览器用户目录" }, JsonOptions, statusCode: 404);
+                return Results.Json(new { ok = false, error = "账号不在账号表内" }, JsonOptions, statusCode: 404);
             }
 
             string url = options.Url;
@@ -407,12 +445,16 @@ public static class Program
                 url = request.Url;
             }
 
-            // [段1] 先结束面板之外的实例，再以受控方式重开
+            // [段1] 接管语义并入套壳——账号一律由套壳承载，不再有「面板之外的窗口」要结束
             try
             {
-                int killed = await hub.KillByProfileAsync(target.ProfileDir, ct).ConfigureAwait(false);
-                BrowserOpenResult opened = await hub.EnsureAsync(target.ProfileDir, url, ct).ConfigureAwait(false);
-                return Results.Json(new { ok = true, killed, launched = opened.Launched }, JsonOptions);
+                JsonElement response = await shell.OpenAsync(target.ShortcutPath, url, true, 90000).ConfigureAwait(false);
+                if (!ShellClient.IsOk(response))
+                {
+                    return Results.Json(new { ok = false, error = ShellClient.ErrorText(response) }, JsonOptions, statusCode: 500);
+                }
+
+                return Results.Json(new { ok = true, killed = 0, launched = true, via = "shell" }, JsonOptions);
             }
             catch (Exception ex)
             {
@@ -475,7 +517,7 @@ public static class Program
                 return Results.Json(new { queued = false, reason = "参数不完整" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = FindTarget(options, request.ShortcutPath);
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
             if (target is null)
             {
                 return Results.Json(new { queued = false, reason = "快捷方式不在扫描目录内" }, JsonOptions, statusCode: 404);
@@ -490,7 +532,7 @@ public static class Program
             }
 
             string shortcutPath = target.ShortcutPath;
-            TaskRecord item = service.Tasks.Enqueue("delete", label, shortcutPath, () => RunDeleteAsync(gateway, options, service, profileDir, shortcutPath, workflowId));
+            TaskRecord item = service.Tasks.Enqueue("delete", label, shortcutPath, () => RunDeleteAsync(shell, options, service, shortcutPath, workflowId));
             return Results.Json(new { queued = true, id = item.Id }, JsonOptions);
         });
 
@@ -501,7 +543,7 @@ public static class Program
                 return Results.Json(new { queued = false, reason = "参数不完整" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = FindTarget(options, request.ShortcutPath);
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
             if (target is null)
             {
                 return Results.Json(new { queued = false, reason = "快捷方式不在扫描目录内" }, JsonOptions, statusCode: 404);
@@ -510,7 +552,7 @@ public static class Program
             string filePath = request.FilePath;
             string profileDir = target.ProfileDir;
             string label = "上传 " + Path.GetFileName(filePath);
-            TaskRecord item = service.Tasks.Enqueue("upload", label, target.ShortcutPath, () => RunUploadAsync(gateway, options, profileDir, filePath));
+            TaskRecord item = service.Tasks.Enqueue("upload", label, target.ShortcutPath, () => RunUploadAsync(shell, options, target.ShortcutPath, filePath));
             return Results.Json(new { queued = true, id = item.Id }, JsonOptions);
         });
 
@@ -521,8 +563,7 @@ public static class Program
                 return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = ShortcutScanner.Scan(options.GoogleRoot)
-                .FirstOrDefault(entry => string.Equals(entry.ShortcutPath, request.ShortcutPath, StringComparison.OrdinalIgnoreCase));
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
 
             if (target is null)
             {
@@ -550,8 +591,7 @@ public static class Program
                 return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = ShortcutScanner.Scan(options.GoogleRoot)
-                .FirstOrDefault(entry => string.Equals(entry.ShortcutPath, request.ShortcutPath, StringComparison.OrdinalIgnoreCase));
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
 
             if (target is null)
             {
@@ -579,21 +619,133 @@ public static class Program
             }, JsonOptions);
         });
 
-        app.MapPost("/api/open", async (OpenRequest request, CancellationToken ct) =>
+        app.MapPost("/api/open", async (OpenRequest request) =>
         {
             if (request is null || string.IsNullOrWhiteSpace(request.ShortcutPath))
             {
-                return Results.Json(new { ok = false, error = "shortcutPath 为空" }, JsonOptions, statusCode: 400);
+                return Results.Json(new { ok = false, error = "账号 id 为空" }, JsonOptions, statusCode: 400);
             }
 
-            ShortcutEntry? target = FindTarget(options, request.ShortcutPath);
-            if (target is null || target.ProfileDir.Length == 0)
+            ShortcutEntry? target = FindTarget(registry, request.ShortcutPath);
+            if (target is null)
             {
-                return Results.Json(new { ok = false, error = "未解析出该账号的浏览器用户目录" }, JsonOptions, statusCode: 404);
+                return Results.Json(new { ok = false, error = "账号不在账号表内" }, JsonOptions, statusCode: 404);
             }
 
-            // [段1] 受控打开——保留调试端口，面板此后可控制这个窗口
-            return await OpenTabResultAsync(hub, target.ProfileDir, options.Url, ct).ConfigureAwait(false);
+            // [段1] 套壳浏览器打开——同一个浏览器既是登录窗口也是采集通道，登录态就地保存
+            try
+            {
+                JsonElement response = await shell.OpenAsync(target.ShortcutPath, options.Url, true, 90000).ConfigureAwait(false);
+                if (!ShellClient.IsOk(response))
+                {
+                    return Results.Json(new { ok = false, error = ShellClient.ErrorText(response) }, JsonOptions, statusCode: 500);
+                }
+
+                return Results.Json(new { ok = true, via = "shell" }, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        // 账号表（内置账号源）——面板增删改走这里
+        app.MapGet("/api/accounts/registry", () =>
+        {
+            List<object> items = new List<object>();
+            foreach (AccountEntry entry in registry.All())
+            {
+                items.Add(new
+                {
+                    id = entry.Id,
+                    name = entry.Name,
+                    profileDir = registry.ResolveProfileDir(entry),
+                    importFrom = entry.ImportFrom,
+                    enabled = entry.Enabled,
+                    note = entry.Note,
+                });
+            }
+
+            return Results.Json(new { ok = true, accounts = items, file = registry.FilePath }, JsonOptions);
+        });
+
+        app.MapPost("/api/accounts/add", (AddAccountRequest request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数为空" }, JsonOptions, statusCode: 400);
+            }
+
+            string error;
+            AccountEntry? created = registry.Add(request.Name ?? "", request.Note ?? "", request.ImportFrom ?? "", out error);
+            if (created == null)
+            {
+                return Results.Json(new { ok = false, error }, JsonOptions, statusCode: 400);
+            }
+
+            service.SyncWithRegistry();
+            return Results.Json(new { ok = true, id = created.Id }, JsonOptions);
+        });
+
+        app.MapPost("/api/accounts/update", (UpdateAccountRequest request) =>
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.AccountId))
+            {
+                return Results.Json(new { ok = false, error = "accountId 为空" }, JsonOptions, statusCode: 400);
+            }
+
+            string error;
+            AccountEntry? updated = registry.Update(request.AccountId, request.Name, request.Note, request.Enabled, out error);
+            if (updated == null)
+            {
+                return Results.Json(new { ok = false, error }, JsonOptions, statusCode: 404);
+            }
+
+            service.SyncWithRegistry();
+            return Results.Json(new { ok = true, id = updated.Id, enabled = updated.Enabled }, JsonOptions);
+        });
+
+        app.MapPost("/api/accounts/remove", async (RemoveAccountRequest request) =>
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.AccountId))
+            {
+                return Results.Json(new { ok = false, error = "accountId 为空" }, JsonOptions, statusCode: 400);
+            }
+
+            AccountEntry? entry = registry.Find(request.AccountId);
+            if (entry == null)
+            {
+                return Results.Json(new { ok = false, error = "账号不存在" }, JsonOptions, statusCode: 404);
+            }
+
+            if (request.DeleteProfile)
+            {
+                try
+                {
+                    await shell.RemoveAsync(request.AccountId, true).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    return Results.Json(new { ok = false, error = "删除浏览器数据失败：" + ex.Message }, JsonOptions, statusCode: 500);
+                }
+            }
+
+            bool removed = registry.Remove(request.AccountId);
+            service.SyncWithRegistry();
+            return Results.Json(new { ok = removed }, JsonOptions);
+        });
+
+        app.MapPost("/api/shell/show", async () =>
+        {
+            try
+            {
+                JsonElement response = await shell.ShowAsync().ConfigureAwait(false);
+                return Results.Json(new { ok = ShellClient.IsOk(response) }, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
         });
 
         // 线上识别（RunningHub）——账号复用 accounts.json，面板不展示密钥
@@ -1235,7 +1387,7 @@ public static class Program
             }
         });
 
-        // 实时变声（线 3）——RVC 页签「实时」子签：设备 / 开流 / 停流 / 热更 / 自检 / Voicemeeter
+        // 实时变声（线 3）——RVC 页签「实时」子签：设备 / 开流 / 停流 / 热更 / 自检 / 送声驱动（VB-CABLE）
         app.MapGet("/api/rvc/realtime", async (CancellationToken ct) =>
         {
             return Results.Json(await rvc.RealtimeSnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
@@ -1301,15 +1453,15 @@ public static class Program
             return Results.Json(new { ok, message, state = result }, JsonOptions);
         });
 
-        app.MapGet("/api/rvc/realtime/voicemeeter", () =>
+        app.MapGet("/api/rvc/realtime/vbcable", () =>
         {
-            return Results.Json(new { ok = true, voicemeeter = rvc.VoicemeeterDetect() }, JsonOptions);
+            return Results.Json(new { ok = true, vbcable = rvc.VbCableDetect() }, JsonOptions);
         });
 
-        app.MapPost("/api/rvc/realtime/voicemeeter/launch", () =>
+        app.MapPost("/api/rvc/realtime/vbcable/install", () =>
         {
-            (bool ok, string message) = rvc.VoicemeeterLaunch();
-            return Results.Json(new { ok, message, voicemeeter = rvc.VoicemeeterDetect() }, JsonOptions);
+            (bool ok, string message) = rvc.VbCableInstall();
+            return Results.Json(new { ok, message, vbcable = rvc.VbCableDetect() }, JsonOptions);
         });
 
         // 本地生成（Qwen3-Omni 转写）——能力板块第三个页签里的第五个生成器：环境 / 提示词 / 转写 / 产物
@@ -1398,14 +1550,19 @@ public static class Program
         });
     }
 
-    /// <summary>按快捷方式路径找扫描结果。</summary>
-    /// <param name="options">运行选项。</param>
-    /// <param name="shortcutPath">快捷方式完整路径。</param>
-    /// <returns>扫描项；找不到返回 null。</returns>
-    private static ShortcutEntry? FindTarget(AppOptions options, string shortcutPath)
+    /// <summary>按账号 id 找账号槽位（内置账号表）。</summary>
+    /// <param name="registry">账号表。</param>
+    /// <param name="shortcutPath">账号 id。</param>
+    /// <returns>槽位；找不到返回 null。</returns>
+    private static ShortcutEntry? FindTarget(AccountRegistryStore registry, string shortcutPath)
     {
-        return ShortcutScanner.Scan(options.GoogleRoot)
-            .FirstOrDefault(entry => string.Equals(entry.ShortcutPath, shortcutPath, StringComparison.OrdinalIgnoreCase));
+        AccountEntry? entry = registry.Find(shortcutPath);
+        if (entry == null || !entry.Enabled)
+        {
+            return null;
+        }
+
+        return registry.ToEntry(entry);
     }
 
     /// <summary>受控打开地址——确保该账号有受控浏览器，再开一个前台标签页。</summary>
@@ -1433,37 +1590,36 @@ public static class Program
     }
 
     /// <summary>任务体——删除一个工作流；站点删成功后同步从快照里摘掉该条。</summary>
-    /// <param name="gateway">CDP 会话入口。</param>
+    /// <param name="shell">套壳浏览器客户端。</param>
     /// <param name="options">运行选项。</param>
     /// <param name="service">采集服务（快照落点）。</param>
-    /// <param name="profileDir">浏览器用户数据目录。</param>
-    /// <param name="shortcutPath">快捷方式完整路径。</param>
+    /// <param name="accountId">账号 id。</param>
     /// <param name="workflowId">工作流 id。</param>
     /// <returns>任务结果。</returns>
-    private static async Task<TaskOutcome> RunDeleteAsync(CdpGateway gateway, AppOptions options, CollectService service, string profileDir, string shortcutPath, string workflowId)
+    private static async Task<TaskOutcome> RunDeleteAsync(ShellClient shell, AppOptions options, CollectService service, string accountId, string workflowId)
     {
-        var admin = new WorkflowAdmin(gateway, options.WorkspaceUrl);
-        WorkflowOpResult outcome = await admin.DeleteAsync(profileDir, workflowId, CancellationToken.None).ConfigureAwait(false);
+        var admin = new WorkflowAdmin(shell, options.WorkspaceUrl);
+        WorkflowOpResult outcome = await admin.DeleteAsync(accountId, workflowId, CancellationToken.None).ConfigureAwait(false);
 
         // [段1] 站点删成功即从快照摘掉该条——面板立刻反映，不必等下一次采集
         if (outcome.Ok)
         {
-            service.RemoveWorkflow(shortcutPath, workflowId);
+            service.RemoveWorkflow(accountId, workflowId);
         }
 
         return BuildOutcome(outcome, "已删除", "删除失败");
     }
 
     /// <summary>任务体——上传一个工作流文件。</summary>
-    /// <param name="gateway">CDP 会话入口。</param>
+    /// <param name="shell">套壳浏览器客户端。</param>
     /// <param name="options">运行选项。</param>
-    /// <param name="profileDir">浏览器用户数据目录。</param>
+    /// <param name="accountId">账号 id。</param>
     /// <param name="filePath">工作流 JSON 完整路径。</param>
     /// <returns>任务结果。</returns>
-    private static async Task<TaskOutcome> RunUploadAsync(CdpGateway gateway, AppOptions options, string profileDir, string filePath)
+    private static async Task<TaskOutcome> RunUploadAsync(ShellClient shell, AppOptions options, string accountId, string filePath)
     {
-        var admin = new WorkflowAdmin(gateway, options.WorkspaceUrl);
-        WorkflowOpResult outcome = await admin.UploadAsync(profileDir, filePath, 45, CancellationToken.None).ConfigureAwait(false);
+        var admin = new WorkflowAdmin(shell, options.WorkspaceUrl);
+        WorkflowOpResult outcome = await admin.UploadAsync(accountId, filePath, 45, CancellationToken.None).ConfigureAwait(false);
         return BuildOutcome(outcome, "已上传", "上传失败");
     }
 
@@ -1529,6 +1685,24 @@ public sealed record ProbeRequest(string? ShortcutPath, string? Url);
 /// <param name="ShortcutPath">快捷方式完整路径。</param>
 /// <param name="Url">要打开的地址。</param>
 public sealed record OpenUrlRequest(string? ShortcutPath, string? Url);
+
+/// <summary>新增账号请求体。</summary>
+/// <param name="Name">显示名。</param>
+/// <param name="Note">备注。</param>
+/// <param name="ImportFrom">一次性导入源目录（旧 Chrome 用户目录）。</param>
+public sealed record AddAccountRequest(string? Name, string? Note, string? ImportFrom);
+
+/// <summary>改动账号请求体。</summary>
+/// <param name="AccountId">账号 id。</param>
+/// <param name="Name">新显示名（空 = 不改）。</param>
+/// <param name="Note">新备注（null = 不改）。</param>
+/// <param name="Enabled">启用状态（null = 不改）。</param>
+public sealed record UpdateAccountRequest(string? AccountId, string? Name, string? Note, bool? Enabled);
+
+/// <summary>删除账号请求体。</summary>
+/// <param name="AccountId">账号 id。</param>
+/// <param name="DeleteProfile">是否同时删除该账号的浏览器数据目录。</param>
+public sealed record RemoveAccountRequest(string? AccountId, bool DeleteProfile);
 
 /// <summary>页面内求值请求体（诊断用）。</summary>
 /// <param name="ShortcutPath">快捷方式完整路径。</param>

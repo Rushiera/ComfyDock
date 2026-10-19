@@ -9,8 +9,8 @@ using ComfyDock.Models;
 namespace ComfyDock.Collect;
 
 /// <summary>
-/// 采集器——**一次 CDP 会话**同时取回「登录态 + RH 币余额」与「工作流列表」。
-/// 走 headless chrome 的 DevTools 协议，凭据不出浏览器。
+/// 采集器——**一次套壳浏览器会话**同时取回「登录态 + RH 币余额」与「工作流列表」。
+/// 走软件内置套壳（WebView2）在账号自己的数据目录里执行：人工登录与自动采集共用同一份 profile，凭据不出浏览器。
 /// </summary>
 public sealed class Collector
 {
@@ -105,8 +105,8 @@ public sealed class Collector
     /// <summary>等待页面数据时的轮询间隔（毫秒）——先探再等，不用等满一秒才看第一眼。</summary>
     private const int PollIntervalMs = 250;
 
-    /// <summary>CDP 会话入口（受控实例优先）。</summary>
-    private readonly CdpGateway _gateway;
+    /// <summary>套壳浏览器客户端（WebView2，账号自己的数据目录）。</summary>
+    private readonly ShellClient _shell;
 
     /// <summary>首页地址（SSR payload 带登录态与余额）。</summary>
     private readonly string _homeUrl;
@@ -118,56 +118,42 @@ public sealed class Collector
     private readonly int _waitSeconds;
 
     /// <summary>构造采集器。</summary>
-    /// <param name="gateway">CDP 会话入口（受控实例优先，其次 headless 临时实例）。</param>
+    /// <param name="shell">套壳浏览器客户端。</param>
     /// <param name="homeUrl">首页地址（SSR payload 带登录态与余额）。</param>
     /// <param name="workspaceUrl">工作台地址（XHR 拉工作流列表）。</param>
     /// <param name="waitSeconds">等待页面数据的秒数上限。</param>
-    public Collector(CdpGateway gateway, string homeUrl, string workspaceUrl, int waitSeconds = 45)
+    public Collector(ShellClient shell, string homeUrl, string workspaceUrl, int waitSeconds = 45)
     {
-        _gateway = gateway;
+        _shell = shell;
         _homeUrl = homeUrl;
         _workspaceUrl = workspaceUrl;
         _waitSeconds = waitSeconds;
     }
 
-    /// <summary>采集单个账号槽位。</summary>
-    /// <param name="profileDir">浏览器用户数据目录。</param>
+    /// <summary>采集单个账号（在套壳里打开该账号的数据目录逐页取数）。</summary>
+    /// <param name="accountId">账号 id。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>采集结果（余额 + 工作流列表）。</returns>
-    public async Task<CollectResult> CollectAsync(string profileDir, CancellationToken ct)
+    public async Task<CollectResult> CollectAsync(string accountId, CancellationToken ct)
     {
         var result = new CollectResult();
 
-        // [段1] 用户目录可用性
-        if (string.IsNullOrWhiteSpace(profileDir))
+        // [段1] 账号 id 可用性
+        if (string.IsNullOrWhiteSpace(accountId))
         {
             result.Status = "error";
-            result.Error = "快捷方式未解析出 --user-data-dir";
+            result.Error = "账号 id 为空";
             return result;
         }
 
-        if (!Directory.Exists(profileDir))
-        {
-            result.Status = "error";
-            result.Error = "用户目录不存在：" + profileDir;
-            return result;
-        }
-
-        // [段2] 取通道——受控实例优先；用户目录被面板之外的实例占用则标「运行中」，不硬闯
-        CdpLease lease;
+        // [段2] 装页面钩子——XHR 捕获脚本在每个新文档创建时执行（同一账号视图只装一次）
         try
         {
-            lease = await _gateway.AcquireAsync(profileDir, ct).ConfigureAwait(false);
+            await _shell.AddInitScriptAsync(accountId, HookScript).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             throw;
-        }
-        catch (BrowserBusyException ex)
-        {
-            result.Status = "running";
-            result.Error = ex.Message;
-            return result;
         }
         catch (Exception ex)
         {
@@ -176,63 +162,76 @@ public sealed class Collector
             return result;
         }
 
-        await using (lease)
+        try
         {
-            try
+            // [段3] 第一步：首页 SSR payload 带登录态与余额
+            await _shell.OpenAsync(accountId, _homeUrl, false, 60000).ConfigureAwait(false);
+            string userJson = await WaitForUserAsync(accountId, ct).ConfigureAwait(false);
+            ApplyUser(result, userJson);
+
+            // [段4] 未登录 / 取不到登录数据——直接收工，省掉第二段导航（工作台页必然也拿不到东西）
+            if (!string.Equals(result.Status, "ok", StringComparison.Ordinal))
             {
-                CdpSession session = lease.Session;
-                await session.EnablePageAsync(ct).ConfigureAwait(false);
-                await session.AddInitScriptAsync(HookScript, ct).ConfigureAwait(false);
-
-                // [段3] 第一步：首页 SSR payload 带登录态与余额
-                await session.NavigateAsync(_homeUrl, ct).ConfigureAwait(false);
-                string userJson = await WaitForUserAsync(session, ct).ConfigureAwait(false);
-                ApplyUser(result, userJson);
-
-                // [段4] 未登录 / 取不到登录数据——直接收工，省掉第二段导航（工作台页必然也拿不到东西）
-                if (!string.Equals(result.Status, "ok", StringComparison.Ordinal))
-                {
-                    return result;
-                }
-
-                // [段5] 第二步：工作台页加载后由 XHR 拉工作流列表
-                await session.NavigateAsync(_workspaceUrl, ct).ConfigureAwait(false);
-                string workflowBody = await WaitForCaptureAsync(session, WorkflowApiPath, ct).ConfigureAwait(false);
-                ApplyWorkflows(result, workflowBody);
-
-                // [段6] 第三步：算力获取明细——每日赠送一笔、24 小时到期，取最新一条的获取时间与额度
-                await session.NavigateAsync(GainPageUrl, ct).ConfigureAwait(false);
-                string gainBody = await WaitForCaptureAsync(session, GainApiPath, ct).ConfigureAwait(false);
-                ApplyGain(result, gainBody);
-
-                // [段7] 第四步：任务费用明细——只累加「上次获取算力之后」的 RH 币花费（没有获取记录就不必跑）
-                if (result.CoinGainTime.Length > 0)
-                {
-                    await session.NavigateAsync(BillPageUrl, ct).ConfigureAwait(false);
-                    string spendBody = await WaitForCaptureAsync(session, SpendApiPath, ct).ConfigureAwait(false);
-                    ApplySpend(result, spendBody);
-                }
+                return result;
             }
-            catch (OperationCanceledException)
+
+            // [段5] 第二步：工作台页加载后由 XHR 拉工作流列表
+            await _shell.OpenAsync(accountId, _workspaceUrl, false, 60000).ConfigureAwait(false);
+            string workflowBody = await WaitForCaptureAsync(accountId, WorkflowApiPath, ct).ConfigureAwait(false);
+            ApplyWorkflows(result, workflowBody);
+
+            // [段6] 第三步：算力获取明细——每日赠送一笔、24 小时到期，取最新一条的获取时间与额度
+            await _shell.OpenAsync(accountId, GainPageUrl, false, 60000).ConfigureAwait(false);
+            string gainBody = await WaitForCaptureAsync(accountId, GainApiPath, ct).ConfigureAwait(false);
+            ApplyGain(result, gainBody);
+
+            // [段7] 第四步：任务费用明细——只累加「上次获取算力之后」的 RH 币花费（没有获取记录就不必跑）
+            if (result.CoinGainTime.Length > 0)
             {
-                throw;
+                await _shell.OpenAsync(accountId, BillPageUrl, false, 60000).ConfigureAwait(false);
+                string spendBody = await WaitForCaptureAsync(accountId, SpendApiPath, ct).ConfigureAwait(false);
+                ApplySpend(result, spendBody);
             }
-            catch (Exception ex)
-            {
-                result.Status = "error";
-                result.Error = ex.Message;
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            result.Status = "error";
+            result.Error = ex.Message;
         }
 
         return result;
     }
-    private async Task<string> WaitForUserAsync(CdpSession session, CancellationToken ct)
+    /// <summary>容错求值——页面在忙时求值会超时，按「暂时取不到」处理，让轮询继续。</summary>
+    /// <param name="accountId">账号 id。</param>
+    /// <param name="script">脚本正文。</param>
+    /// <returns>结果文本；超时或失败返回空串。</returns>
+    private async Task<string> SafeEvalAsync(string accountId, string script)
+    {
+        try
+        {
+            return await _shell.EvalTextAsync(accountId, script, 20000).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return "";
+        }
+        catch (InvalidOperationException)
+        {
+            return "";
+        }
+    }
+
+    private async Task<string> WaitForUserAsync(string accountId, CancellationToken ct)
     {
         int rounds = _waitSeconds * 1000 / PollIntervalMs;
         for (int i = 0; i < rounds; i++)
         {
             await Task.Delay(PollIntervalMs, ct).ConfigureAwait(false);
-            string json = await session.EvaluateAsync(ReadUserScript, false, ct).ConfigureAwait(false);
+            string json = await SafeEvalAsync(accountId, ReadUserScript).ConfigureAwait(false);
             if (json.Length > 0)
             {
                 return json;
@@ -242,17 +241,17 @@ public sealed class Collector
         return "";
     }
     /// <summary>等页面自己把某个接口的响应发出来（XHR 钩子捕获），取回响应体。</summary>
-    /// <param name="session">CDP 会话。</param>
+    /// <param name="accountId">账号 id。</param>
     /// <param name="apiPath">目标接口路径片段。</param>
     /// <param name="ct">取消令牌。</param>
     /// <returns>响应体；等待超时返回空串。</returns>
-    private async Task<string> WaitForCaptureAsync(CdpSession session, string apiPath, CancellationToken ct)
+    private async Task<string> WaitForCaptureAsync(string accountId, string apiPath, CancellationToken ct)
     {
         int rounds = _waitSeconds * 1000 / PollIntervalMs;
         for (int i = 0; i < rounds; i++)
         {
             await Task.Delay(PollIntervalMs, ct).ConfigureAwait(false);
-            string raw = await session.EvaluateAsync("JSON.stringify(window.__rhCapture||[])", false, ct).ConfigureAwait(false);
+            string raw = await SafeEvalAsync(accountId, "JSON.stringify(window.__rhCapture||[])").ConfigureAwait(false);
             string body = ExtractCaptureBody(raw, apiPath);
             if (body.Length > 0)
             {

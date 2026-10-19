@@ -25,11 +25,11 @@ public static class RhCli
     /// <returns>退出码（0 成功 / 1 动作失败 / 2 环境错误）。</returns>
     public static async Task<int> RunAsync(AppOptions options)
     {
-        // [段1] 组内核——账号来源仍是 accounts.json（不新增账号表）
+        // [段1] 组内核——账号来源是内置账号表（data/accounts-registry.json）
         var store = new AccountStore(options.SnapshotPath);
-        var hub = new BrowserHub(options.ChromePath, Path.Combine(options.DataDir, "browsers.json"));
-        var gateway = new CdpGateway(options.ChromePath, hub);
-        var collect = new CollectService(options, new Collector(gateway, options.Url, options.WorkspaceUrl), store);
+        var registry = new AccountRegistryStore(options.RegistryPath, options.DataDir);
+        var shell = new ShellClient(options.ShellPath, options.DataDir);
+        var collect = new CollectService(options, new Collector(shell, options.Url, options.WorkspaceUrl), store, registry);
 
         RhService service;
         try

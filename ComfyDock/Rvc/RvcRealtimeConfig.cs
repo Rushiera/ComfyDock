@@ -14,8 +14,8 @@ public sealed class RvcRealtimeDevice
     /// <summary>设备名（系统端点原样）。</summary>
     public string Name { get; set; } = "";
 
-    /// <summary>是否虚拟声卡端点（Voicemeeter 的 VAIO 系列）。</summary>
-    public bool Vaio { get; set; }
+    /// <summary>是否虚拟声卡端点（送声给其他软件时输出走 CABLE Input）。</summary>
+    public bool Cable { get; set; }
 }
 
 /// <summary>
@@ -213,6 +213,8 @@ public sealed class RvcRealtimeState
 
     /// <summary>干声直通（true = 旁路推理）。</summary>
     public bool Bypass { get; set; }
+    /// <summary>当前实际在跑的音色模型文件名（开流后才有；换音色重开流会跟着变）。</summary>
+    public string Model { get; set; } = "";
 
     /// <summary>本次开流时刻。</summary>
     public string StartedAt { get; set; } = "";
@@ -259,8 +261,8 @@ public sealed class RvcDeviceItem
     /// <summary>可作输出。</summary>
     public bool Out { get; set; }
 
-    /// <summary>是否虚拟声卡端点（Voicemeeter VAIO）。</summary>
-    public bool Vaio { get; set; }
+    /// <summary>是否虚拟声卡端点（VB-CABLE 的 CABLE Input / CABLE Output）。</summary>
+    public bool Cable { get; set; }
 
     /// <summary>是否该 hostapi 的默认设备。</summary>
     public bool Default { get; set; }

@@ -15,11 +15,11 @@
   → 起流式 worker（python_embeded，常驻）
   → InputStream 持续收块（block_time）
   → 每块：前置缓存 extra_time → F0 重算 → 变声 → crossfade 拼接
-  → OutputStream 持续放块（耳机，或 Voicemeeter 的 VAIO 端点）
+  → OutputStream 持续放块（耳机 = 自己听；VB-CABLE 的 CABLE Input = 送给别的软件）
   → 参数热更走 update（不重开流）；干声 / 变声在块边界切换
 ```
 
-**不做的事：** 不启 ComfyUI 服务、不开端口、不装运行时、不安装音频驱动、不改 Voicemeeter 配置、不录音落盘。
+**不做的事：** 不启 ComfyUI 服务、不开端口、不装运行时、不录音落盘、不改系统默认设备、不改音频路由。送声用的 VB-CABLE 驱动**由内置安装包一键装**（面板按钮 + UAC 授权，装完要重启电脑），装完不代管它、不 P/Invoke。
 
 ---
 
@@ -30,8 +30,9 @@
 | worker 脚本 | `ComfyDock/Rvc/RvcRealtimeWorkerScript.cs`（C# 常量）→ 运行时解到 `data\rvc\rvc_realtime_worker.py` | 与离线 worker 分立：离线是「一请求一响应」，实时是「流式状态机」 |
 | C# 引擎 | `ComfyDock/Rvc/RvcRealtimeEngine.cs` | 设备枚举 / 起停 / 参数热更 / 事件泵 |
 | 服务面 | `ComfyDock/Rvc/RvcService.cs` 实时段（文件尾「===== 实时段 =====」之后，只追加） | 配置读写 / 起停 / 热更 / 互斥判定 / 自检 |
-| 端点 | `ComfyDock/Program.cs`（`/api/rvc/realtime*`） | GET `realtime` · GET `live` · POST `start` / `stop` / `update` / `devices` / `selftest` · GET `voicemeeter` · POST `voicemeeter/launch` |
-| 配置 | `data\rvc-realtime-config.json` | 设备存「索引 + 名字 + vaio」三份；**整对象语义**（见 §5 坑一） |
+| 端点 | `ComfyDock/Program.cs`（`/api/rvc/realtime*`） | GET `realtime` · GET `live` · POST `start` / `stop` / `update` / `devices` / `selftest` · GET `vbcable` · POST `vbcable/install` |
+| 送声驱动 | `ComfyDock/Rvc/VbCableService.cs` + 内置包 `runtime\vbcable\VBCABLE_Driver_Pack*.zip`（原样不修改，来源 www.vb-cable.com · donationware） | 检测（`System32\drivers\vbaudio_cable*.sys` + 包在位 + 解压后的安装器）· 解压到 `data\vbcable` · `runas -i -h` 提权安装；**装完要重启电脑** |
+| 配置 | `data\rvc-realtime-config.json` | 设备存「索引 + 名字 + 是否虚拟声卡」三份；**整对象语义**（见 §5 坑一） |
 | 面板 | `ComfyDock/Web/wwwroot/index.html`（`#genPanelRvc` → `#rvcViewRt` + `rvcRt*` JS 段） | 独占面：仓库根 `Web\wwwroot` 是发布副本，改了不生效 |
 | 降噪 | `runtime\rvc\torchgate.py` | 纯 torch，零新依赖；输入 / 输出两个开关 |
 | 数值口径 | `runtime\rvc\rvc_lite\` | 与离线共用——**改它必须跑 `--rvc-selftest` 回归** |
@@ -58,12 +59,12 @@
 
 | 控件 | 语义 |
 |:--|:--|
-| 设备类型（hostapi） | `（系统默认）` = 合并全部 hostapi 列设备（设备索引全局唯一）；选定某组只列该组设备 |
-| 输入设备 | 麦克风端点 |
-| 输出设备 | 变声送去哪：耳机 = 自己听；Voicemeeter 的 VAIO = 送给别的软件（名字后标 `（vaio）`） |
+| 设备类型（hostapi） | 下拉按 hostapi 分组显示（MME / DirectSound / WASAPI / WDM-KS）——重名端点靠分组分辨；蓝牙耳机只出现在 WDM-KS 组 |
+| 输入设备 | 麦克风端点（自己选；「（不选）」= 系统默认） |
+| 输出设备 | 变声送去哪：耳机 / 扬声器 = 自己听；切到「提交」时自动选 VB-CABLE 的 CABLE Input 并**锁住这一栏**（切回变声 / 干声自动还原进提交前的端点） |
 | WASAPI 独占 | 延迟更低，但独占期间别的软件拿不到该端点 |
 | 采样率 | 48000 / 44100 / 跟随音色模型 |
-| 音色 / F0 取法 / 推理设备 / 半精度 | 同离线链口径；**fcpe 不接**（`torchfcpe` 未装） |
+| 音色 / F0 取法 / 推理设备 / 半精度 | 同离线链口径；**fcpe 不接**（`torchfcpe` 未装）。改了就自动重开流（见 §4.3）——换音色会重新加载权重 |
 
 ### 4.2 延迟旋钮（改了要重开流）
 
@@ -78,7 +79,9 @@
 
 变调 · formant · 检索混合 · 响应阈值 · 输入降噪 · 输出降噪 · 相位声码器。
 
-**要重开流的：** 设备 / 采样率 / F0 取法 / 精度（`update` 回执里给 `needRestart`）。
+**要重开流的：** 设备 / 采样率 / F0 取法 / 音色 / 推理设备 / 半精度 / 延迟旋钮——`update` 回执里给 `needRestart`。流在跑时**后端自动按新配置重开**（`stop` + `start` 在服务面完成，面板与外部调用都不用自己拼两步）：换音色要重新加载权重（约 5~15 秒），设备 / 精度类只重建链（秒级）。重开失败时回执带失败原因，配置仍已落盘（下次手动开流按新配置）。
+
+**没开流时改参数也落盘**——热更组控件（含降噪勾选）松手即推一次 `update`，回执「配置已保存，下次开流生效」，滑块值不会在切页签后丢掉。流处在 `starting`（正在加载模型）时改动，同样按新配置再重开一次——请求在服务面串行排队，不会互相覆盖。
 
 ---
 
@@ -110,7 +113,9 @@
 | 听不到变声 | 输出设备选的是不是当前在听的端点；再看「干声 / 变声」按钮是不是停在干声 |
 | 声音断续 / 爆音 | 调大 block_time 与 crossfade；显存不足时换 pm 取法或停掉别的占卡程序 |
 | 音调怪 / 电音 | F0 取法换 rmvpe；检查变调（男→女约 +12） |
-| Voicemeeter 显示未装 | 本机 `C:\Program Files (x86)\VB\Voicemeeter`；面板只做检测 / 一键拉起，不装驱动 |
+| VB-CABLE 显示未装 | 到「环境与模型」子签的「送声驱动（VB-CABLE）」块点安装（内置包在 `runtime\vbcable`，不需要联网）；装完**重启电脑**，再回实时子签点「刷新设备」 |
+| 切到提交但别的软件没声 | 别的软件里选「CABLE Output」当麦克风；面板输出栏是否锁在 CABLE Input（状态块末行「送声端点」会点明）；提交模式下变声必须是真的变声（干声不会送出去） |
+| 端点显示「不在位」 | 配置里存的端点已消失（卸载了旧虚拟声卡 / 换了设备）——点「刷新设备」重选一个再开流；开流也会按名字校验并拒绝 |
 
 ---
 
@@ -119,9 +124,13 @@
 | 要改什么 | 动哪 |
 |:--|:--|
 | 加一个热更参数 | ① `RvcRealtimeConfig` 加字段 → ② 热更白名单（`RvcService` 实时段的 diff 判定）→ ③ worker 的 `update` 处理 → ④ 面板控件 + `rvcRtCollect` |
+| 加一个「改了要重开流」的控件 | ① `RealtimeNeedsRestart` 加字段比对 → ② 面板控件 onchange 绑 `rvcRtAutoRestart`（stop + start 归后端 `RealtimeUpdateAsync`，面板不自己拼两步） |
 | 加一个事件（如电平包络） | ① worker `emit` → ② 引擎事件泵解析 → ③ `RvcRealtimeState` 加字段 → ④ 面板 `renderRvcRt` |
+| 换音色后说话人索引越界 | worker `start()` 已按 `model.n_spk` 收敛（越界归 0）并在 `started` 回执带 `sid` / `nSpk`；引擎 `StartAsync` 据此在状态消息里出声 |
+| 改 worker 脚本（`RvcRealtimeWorkerScript`）后没生效 | 脚本按**内容比对**落盘：`EnsureScriptOnDisk` 发现内容换代就停掉在跑的 worker（`EnsureWorkerReady`），下次开流按新脚本起——不必重启软件 |
 | 改数值口径（F0 / 检索混合 / protect） | `runtime\rvc\rvc_lite`（离线实时共用）——改后必跑 `--rvc-selftest`，整链 maxdiff 2.2e-5 档不退化 |
-| 加设备筛选 / 默认设备 | `renderRvcRtHostApis` / `renderRvcRtDevices` / `rvcRtCollect`（三处同源：渲染与收集必须一致） |
+| 换送声驱动 / 加别的虚拟声卡 | `VbCableService.IsCable`（端点名判定）+ `runtime\vbcable` 里的安装包 + 面板 `rvcRtCableInput` / `rvcRtSetMode`（提交态锁输出栏）/ 状态块「设备校验」——四处同源 |
+| 加设备筛选 / 默认设备 | `renderRvcRtHostApis` / `renderRvcRtDevices` / `rvcRtCollect`（三处同源：渲染与收集必须一致；端点按**名字**匹配，不按索引） |
 | 二期：双输出（干声走 A、变声走 B） | worker 加第二路 `OutputStream` + `outputs: [a, b]` 参数 → 引擎透传 → 面板两路选择 |
 | 二期：预设保存 / 切换 | 端点 `GET/POST /api/rvc/realtime/presets` + 配置落盘；面板加下拉 |
 
