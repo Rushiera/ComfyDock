@@ -1249,13 +1249,13 @@ public static class Program
 
         app.MapPost("/api/omni/pick", async (RhPickRequest request) =>
         {
-            string kind = request is null || request.Kind is null ? "audio" : request.Kind;
+            string kind = request is null || request.Kind is null ? "media" : request.Kind;
             bool directory = string.Equals(kind, "dir", StringComparison.OrdinalIgnoreCase);
             try
             {
                 string path = directory
                     ? await NativePicker.PickDirectoryAsync("选择待转写的目录").ConfigureAwait(false)
-                    : await NativePicker.PickAudioFileAsync("选择待转写的音频").ConfigureAwait(false);
+                    : await NativePicker.PickMediaFileAsync("选择待转写的音频或视频").ConfigureAwait(false);
                 return Results.Json(new { ok = true, path }, JsonOptions);
             }
             catch (Exception ex)

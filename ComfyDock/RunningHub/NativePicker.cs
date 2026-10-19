@@ -38,6 +38,17 @@ public static class NativePicker
     /// <summary>置顶线程扫描间隔（毫秒）。</summary>
     private const int TopmostIntervalMs = 200;
 
+    /// <summary>音频 / 图片过滤器（Win32 双 NUL 分段——运行时拼接，避免转义层数问题）。</summary>
+    private static readonly string FileFilter = "音频 / 图片\0"
+        + "*.mp3;*.wav;*.m4a;*.flac;*.aac;*.ogg;*.opus;*.wma;*.png;*.jpg;*.jpeg;*.webp;*.bmp\0"
+        + "所有文件\0*.*\0";
+
+    /// <summary>音频 / 视频过滤器（转写用——视频会自动抽音轨）。</summary>
+    private static readonly string MediaFilter = "音频 / 视频\0"
+        + "*.mp3;*.wav;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma;*.amr;"
+        + "*.mp4;*.mkv;*.mov;*.avi;*.webm;*.flv;*.wmv;*.m4v;*.ts;*.mpg;*.mpeg;*.rmvb\0"
+        + "所有文件\0*.*\0";
+
     /// <summary>Win32 对话框窗口类名——通用对话框的宿主类。</summary>
     private const string DialogClassName = "#32770";
 
@@ -82,7 +93,15 @@ public static class NativePicker
     /// <returns>选中的文件完整路径；取消为空串。</returns>
     public static Task<string> PickAudioFileAsync(string title)
     {
-        return PickAsync(false, title);
+        return PickAsync(false, title, FileFilter);
+    }
+
+    /// <summary>弹「选择音频或视频」对话框——取消返回空串。</summary>
+    /// <param name="title">对话框标题。</param>
+    /// <returns>选中的文件完整路径；取消为空串。</returns>
+    public static Task<string> PickMediaFileAsync(string title)
+    {
+        return PickAsync(false, title, MediaFilter);
     }
 
     /// <summary>弹「选择图片」对话框——取消返回空串（过滤器与音频共用一张表，靠标题区分意图）。</summary>
@@ -90,7 +109,7 @@ public static class NativePicker
     /// <returns>选中的文件完整路径；取消为空串。</returns>
     public static Task<string> PickImageFileAsync(string title)
     {
-        return PickAsync(false, title);
+        return PickAsync(false, title, FileFilter);
     }
 
     /// <summary>弹「选择目录」对话框——取消返回空串。</summary>
@@ -98,14 +117,15 @@ public static class NativePicker
     /// <returns>选中的目录完整路径；取消为空串。</returns>
     public static Task<string> PickDirectoryAsync(string title)
     {
-        return PickAsync(true, title);
+        return PickAsync(true, title, FileFilter);
     }
 
     /// <summary>在独立 STA 线程上弹框并等结果——等待走 Task，不占 Kestrel 请求线程；同刻只允许一个框。</summary>
     /// <param name="directory">true = 选目录 / false = 选文件。</param>
     /// <param name="title">对话框标题。</param>
+    /// <param name="filter">文件过滤器（选目录时忽略）。</param>
     /// <returns>选中的路径；取消为空串。</returns>
-    private static async Task<string> PickAsync(bool directory, string title)
+    private static async Task<string> PickAsync(bool directory, string title, string filter)
     {
         if (Interlocked.CompareExchange(ref busy, 1, 0) != 0)
         {
@@ -117,7 +137,7 @@ public static class NativePicker
         {
             try
             {
-                completion.SetResult(RunDialog(directory, title));
+                completion.SetResult(RunDialog(directory, title, filter));
             }
             catch (Exception ex)
             {
@@ -156,8 +176,9 @@ public static class NativePicker
     /// <summary>STA 线程内的弹框主体——起置顶线程 → 弹框 → 收置顶线程。</summary>
     /// <param name="directory">true = 选目录 / false = 选文件。</param>
     /// <param name="title">对话框标题。</param>
+    /// <param name="filter">文件过滤器（选目录时忽略）。</param>
     /// <returns>选中的路径；取消为空串。</returns>
-    private static string RunDialog(bool directory, string title)
+    private static string RunDialog(bool directory, string title, string filter)
     {
         StartTopmostPump(GetCurrentThreadId());
         try
@@ -169,7 +190,7 @@ public static class NativePicker
                 return ShowBrowseFolder(title, owner);
             }
 
-            return ShowOpenFile(title, owner);
+            return ShowOpenFile(title, owner, filter);
         }
         finally
         {
@@ -250,8 +271,9 @@ public static class NativePicker
     /// <summary>通用「打开文件」对话框。</summary>
     /// <param name="title">标题。</param>
     /// <param name="owner">属主窗口句柄。</param>
+    /// <param name="filter">文件过滤器（Win32 双 NUL 分段）。</param>
     /// <returns>文件完整路径；取消为空串。</returns>
-    private static string ShowOpenFile(string title, IntPtr owner)
+    private static string ShowOpenFile(string title, IntPtr owner, string filter)
     {
         IntPtr fileBuffer = Marshal.AllocHGlobal(FileBufferChars * 2);
         try
@@ -260,7 +282,7 @@ public static class NativePicker
             var dialog = new OpenFileName();
             dialog.lStructSize = Marshal.SizeOf<OpenFileName>();
             dialog.hwndOwner = owner;
-            dialog.lpstrFilter = "音频 / 图片\0*.mp3;*.wav;*.m4a;*.flac;*.aac;*.ogg;*.opus;*.wma;*.png;*.jpg;*.jpeg;*.webp;*.bmp\0所有文件\0*.*\0";
+            dialog.lpstrFilter = filter;
             dialog.nFilterIndex = 1;
             dialog.lpstrFile = fileBuffer;
             dialog.nMaxFile = FileBufferChars;

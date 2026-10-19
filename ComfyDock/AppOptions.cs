@@ -84,8 +84,8 @@ public sealed class AppOptions
     /// <summary>RVC 自检 CLI——指定音色模型文件名（空 = weights 里第一个）。</summary>
     public string RvcModel { get; set; } = "";
 
-    /// <summary>本地生成（Qwen3-Omni 转写）——引擎：llama.cpp 的 llama-mtmd-cli（同目录 DLL 一起）。</summary>
-    public string OmniCli { get; set; } = @"D:\Mau\WorkSpace\协商知识库\tools\llama\bin\llama-mtmd-cli.exe";
+    /// <summary>本地生成（Qwen3-Omni 转写）——引擎：llama.cpp 的 llama-mtmd-cli（自持，随 ComfyUI 一起放）。</summary>
+    public string OmniCli { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\tools\llama-omni\bin\llama-mtmd-cli.exe";
 
     /// <summary>本地生成（Qwen3-Omni 转写）——主模型（模型住本机 ComfyUI 的 models\LLM）。</summary>
     public string OmniModel { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\models\LLM\Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf";

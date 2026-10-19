@@ -371,18 +371,91 @@ public sealed class OmniEngine
         return true;
     }
 
-    /// <summary>探音频时长（秒）——借 ComfyUI 的 python_embeded 跑 PyAV；探不到返回 0。</summary>
+    /// <summary>探媒体时长与有没有音轨——借 ComfyUI 的 python_embeded 跑 PyAV；探不到返回 (0, false)。</summary>
     /// <param name="python">解释器完整路径。</param>
-    /// <param name="audio">音频完整路径。</param>
-    /// <returns>时长（秒）；失败返回 0。</returns>
-    public static double ProbeDuration(string python, string audio)
+    /// <param name="path">媒体完整路径（音频或视频）。</param>
+    /// <returns>(时长秒, 是否含音轨)。</returns>
+    public static (double Seconds, bool HasAudio) ProbeMedia(string python, string path)
     {
-        if (python.Length == 0 || !File.Exists(python) || !File.Exists(audio))
+        if (python.Length == 0 || !File.Exists(python) || !File.Exists(path))
         {
-            return 0;
+            return (0, false);
         }
 
-        const string script = "import sys, av\nc = av.open(sys.argv[1])\nprint((c.duration or 0) / 1000000.0)";
+        const string script =
+            "import sys, av\n"
+            + "c = av.open(sys.argv[1])\n"
+            + "d = (c.duration or 0) / 1000000.0\n"
+            + "has = 1 if any(s.type == 'audio' for s in c.streams) else 0\n"
+            + "print('%.3f %d' % (d, has))";
+
+        string text = RunPython(python, script, 60000, path).Trim();
+        string[] parts = text.Split(' ');
+        if (parts.Length != 2)
+        {
+            return (0, false);
+        }
+
+        double seconds = 0;
+        if (!double.TryParse(parts[0], System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out seconds))
+        {
+            seconds = 0;
+        }
+
+        bool hasAudio = parts[1] == "1";
+        return (seconds > 0 ? seconds : 0, hasAudio);
+    }
+
+    /// <summary>把视频（或任意容器）的音轨抽成 16 kHz 单声道 wav——借 python_embeded 的 PyAV 解码。</summary>
+    /// <param name="python">解释器完整路径。</param>
+    /// <param name="input">源文件（视频 / 音频容器）。</param>
+    /// <param name="wavOut">目标 wav 完整路径。</param>
+    /// <returns>成功返回 true；没有音轨或解码失败返回 false。</returns>
+    public static bool ExtractAudio(string python, string input, string wavOut)
+    {
+        if (python.Length == 0 || !File.Exists(python) || !File.Exists(input))
+        {
+            return false;
+        }
+
+        string? dir = Path.GetDirectoryName(wavOut);
+        if (dir is not null && dir.Length > 0)
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        const string script =
+            "import sys, av, numpy as np, soundfile as sf\n"
+            + "src, dst = sys.argv[1], sys.argv[2]\n"
+            + "c = av.open(src)\n"
+            + "s = next((st for st in c.streams if st.type == 'audio'), None)\n"
+            + "if s is None:\n"
+            + "    print('NO_AUDIO')\n"
+            + "    raise SystemExit(3)\n"
+            + "r = av.AudioResampler(format='s16', layout='mono', rate=16000)\n"
+            + "chunks = []\n"
+            + "for frame in c.decode(s):\n"
+            + "    for f in r.resample(frame):\n"
+            + "        chunks.append(f.to_ndarray().reshape(-1))\n"
+            + "for f in r.resample(None):\n"
+            + "    chunks.append(f.to_ndarray().reshape(-1))\n"
+            + "data = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int16)\n"
+            + "sf.write(dst, data, 16000, subtype='PCM_16')\n"
+            + "print('OK %.3f' % (len(data) / 16000.0))";
+
+        string text = RunPython(python, script, 1800000, input, wavOut).Trim();
+        return text.StartsWith("OK", StringComparison.Ordinal) && File.Exists(wavOut);
+    }
+
+    /// <summary>跑一段 Python 脚本（stdout 全量返回；失败或超时返回空串）。</summary>
+    /// <param name="python">解释器完整路径。</param>
+    /// <param name="script">脚本正文（-c 传参）。</param>
+    /// <param name="timeoutMs">超时毫秒。</param>
+    /// <param name="arguments">脚本之后的实参（sys.argv[1..]）。</param>
+    /// <returns>stdout 原文；失败返回空串。</returns>
+    private static string RunPython(string python, string script, int timeoutMs, params string[] arguments)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = python,
@@ -396,33 +469,30 @@ public sealed class OmniEngine
 
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(script);
-        startInfo.ArgumentList.Add(audio);
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
 
         try
         {
             using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("进程没有起来");
             Task<string> outTask = process.StandardOutput.ReadToEndAsync();
             Task<string> errTask = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(30000))
+            if (!process.WaitForExit(timeoutMs))
             {
                 KillTree(process);
-                return 0;
+                return "";
             }
 
             process.WaitForExit();
-            string text = outTask.GetAwaiter().GetResult().Trim();
+            string text = outTask.GetAwaiter().GetResult();
             _ = errTask.GetAwaiter().GetResult();
-            if (double.TryParse(text, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double seconds))
-            {
-                return seconds > 0 ? seconds : 0;
-            }
-
-            return 0;
+            return text;
         }
         catch (Exception ex) when (ex is IOException || ex is InvalidOperationException || ex is System.ComponentModel.Win32Exception)
         {
-            return 0;
+            return "";
         }
     }
 
@@ -440,6 +510,7 @@ public sealed class OmniEngine
         catch (Exception ex) when (ex is InvalidOperationException || ex is System.ComponentModel.Win32Exception)
         {
             // 进程已退出 / 权限不足——停不下来时由上层超时兜底
+            Console.Error.WriteLine("结束引擎进程失败：" + ex.Message);
         }
     }
 

@@ -10,6 +10,8 @@ ComfyUI 本地 / 线上运行支持的管理软件——把「本地引擎」与
 
 - **本地生成（RVC 变声）**——同一页签下的第四个生成器：把一段人声的**音色**换成另一个音色（内容与时长保留）。音色模型 / 检索索引 / HuBERT / RMVPE 都住本机 ComfyUI 的 `models\RVC\`，推理代码**随软件走**（`runtime/rvc/rvc_lite`，自持实现）——**不跑 RVC 的 WebUI、不依赖它的整合包、不装 fairseq**（HuBERT 为纯 torch 复刻，逐层与原版对齐 ≤ 7e-6）。依赖（faiss-cpu / pyworld / praat-parselmouth / torchcrepe）装进 ComfyUI 的 `python_embeded`。口径、验证数字与**改动入手点**见 [`runtime/rvc/README.md`](runtime/rvc/README.md)
 
+- **本地生成（Qwen3-Omni 转写）**——同一页签下的第五个生成器：**音频 / 视频 → 文字**。Qwen3-Omni-30B-A3B（GGUF Q4_K_M）经 llama.cpp 的 `llama-mtmd-cli` **整条转写（不切片）**；模型住本机 ComfyUI 的 `models\LLM`（主模型 18.56 GB + mmproj 2.21 GB），**引擎也随 ComfyUI 走**（`ComfyUI\tools\llama-omni\bin`，自持）。**一次性子进程**——每条重新加载模型、跑完即退，不启 ComfyUI 服务、不开端口、不装运行时。**视频自动抽音轨**（16 kHz 单声道，临时 wav 用完即删，原始视频不动）；默认提示词就是「按时间 + 内容的逐字稿」（`[mm:ss]内容`），开箱即用、不用每次写。单文件或目录（一层）批量，产物落 `out\omni\`。口径、参数定档、排障与**改动入手点**见 [`ComfyDock/docs/qwen3-omni.md`](ComfyDock/docs/qwen3-omni.md)
+
 ## 形态
 
 C# / .NET 8 · 单文件 exe（framework-dependent，依赖 .NET 8 运行时）+ Kestrel 内嵌 + `wwwroot` 单页（原生 JS，无前端构建链）。

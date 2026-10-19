@@ -159,20 +159,25 @@ public sealed class OmniEnvSnapshot
 /// </summary>
 public sealed class OmniService
 {
-    /// <summary>能转写的音频扩展名。</summary>
+    /// <summary>能转写的媒体扩展名——音频直接喂，视频先抽音轨。</summary>
     private static readonly string[] AudioExtensions =
     {
-        ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma", ".mp4", ".mkv", ".amr",
+        ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma", ".amr",
     };
 
-    /// <summary>内置默认提示词——与「协商知识库」<c>tools\llama\prompt.txt</c> 同口径。</summary>
+    /// <summary>视频扩展名——先抽 16 kHz 单声道音轨再喂模型。</summary>
+    private static readonly string[] VideoExtensions =
+    {
+        ".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".ts", ".mpg", ".mpeg", ".rmvb",
+    };
+
+    /// <summary>内置默认提示词——按时间 + 内容的逐字稿（换场景才需要改）。</summary>
     public const string DefaultPrompt =
-        "【前文】这是一通电话录音（一方为银行经办，一方为客户）。顺序完整转写通话各方说的话。\n"
-        + "【任务】请把这段电话录音按照顺序转写成文字，要求：1. 按说话人分段，一段一行；"
-        + "2. 每行格式为：[发音开始时间][说话人][说话内容]；"
+        "【任务】请把这段音频按时间顺序逐字转写成文字稿，要求："
+        + "1. 一行一句，按实际说话顺序，不合并、不概括、不省略；"
+        + "2. 每行格式为：[发音开始时间]内容；"
         + "3. 发音开始时间为这句话开始说的时刻，格式[mm:ss]；"
-        + "4. 说话人用 经办 / 客户（只要是不是经办均为客户，有且仅有这两种说话人）表示；"
-        + "5. 交谈场景若有抢话情景，按开始时间交替分段。";
+        + "4. 只输出转写正文，不要标题、不要总结、不要说话人标签。";
 
     /// <summary>单次输入硬上限（秒）——与本地链一致（约 83 分钟）。</summary>
     private const double InputLimitSeconds = 5000.0;
@@ -185,6 +190,9 @@ public sealed class OmniService
 
     /// <summary>日志落点目录。</summary>
     private readonly string _logDir;
+
+    /// <summary>视频抽音轨的临时目录。</summary>
+    private readonly string _tmpDir;
 
     /// <summary>状态锁。</summary>
     private readonly object _gate = new object();
@@ -207,6 +215,7 @@ public sealed class OmniService
         _configPath = Path.Combine(dataDir, "omni-config.json");
         _outDir = outDir;
         _logDir = Path.Combine(dataDir, "omni", "logs");
+        _tmpDir = Path.Combine(dataDir, "omni", "tmp");
         _config = LoadConfig();
 
         if (_config.CliPath.Length == 0)
@@ -539,8 +548,8 @@ public sealed class OmniService
         };
     }
 
-    /// <summary>输入路径 → 音频文件清单（目录只取一层，不递归）。</summary>
-    /// <param name="input">音频文件或目录。</param>
+    /// <summary>输入路径 → 媒体文件清单（目录只取一层，不递归；音频与视频都收）。</summary>
+    /// <param name="input">媒体文件或目录。</param>
     /// <returns>文件清单（排序后）。</returns>
     private static List<string> InputFiles(string input)
     {
@@ -567,7 +576,7 @@ public sealed class OmniService
             foreach (string file in Directory.GetFiles(path))
             {
                 string ext = Path.GetExtension(file).ToLowerInvariant();
-                if (Array.IndexOf(AudioExtensions, ext) >= 0)
+                if (Array.IndexOf(AudioExtensions, ext) >= 0 || Array.IndexOf(VideoExtensions, ext) >= 0)
                 {
                     list.Add(file);
                 }
@@ -584,6 +593,15 @@ public sealed class OmniService
 
         list.Sort(StringComparer.OrdinalIgnoreCase);
         return list;
+    }
+
+    /// <summary>是不是视频（视频要先抽音轨才能喂模型）。</summary>
+    /// <param name="path">文件路径。</param>
+    /// <returns>视频返回 true。</returns>
+    private static bool IsVideo(string path)
+    {
+        string ext = Path.GetExtension(path).ToLowerInvariant();
+        return Array.IndexOf(VideoExtensions, ext) >= 0;
     }
 
     /// <summary>后台跑一批转写，逐条更新任务状态。</summary>
@@ -620,6 +638,7 @@ public sealed class OmniService
             string file = files[i];
             string name = Path.GetFileName(file);
             DateTime itemStarted = DateTime.Now;
+            bool video = IsVideo(file);
 
             lock (_gate)
             {
@@ -630,7 +649,24 @@ public sealed class OmniService
                 }
             }
 
-            double duration = OmniEngine.ProbeDuration(cfg.PythonPath, file);
+            // [段1] 探时长与音轨——视频必须带音轨，否则无法转写（出声，不静默跳过）
+            (double duration, bool hasAudio) = OmniEngine.ProbeMedia(cfg.PythonPath, file);
+            if (video && !hasAudio)
+            {
+                lock (_gate)
+                {
+                    if (i < _job.Items.Count)
+                    {
+                        _job.Items[i].State = "error";
+                        _job.Items[i].Message = "视频没有音轨——无法转写";
+                    }
+
+                    _job.Failed = _job.Failed + 1;
+                }
+
+                continue;
+            }
+
             if (duration > InputLimitSeconds)
             {
                 lock (_gate)
@@ -638,7 +674,51 @@ public sealed class OmniService
                     if (i < _job.Items.Count)
                     {
                         _job.Items[i].State = "error";
-                        _job.Items[i].Message = "音频 " + duration.ToString("0") + " 秒，超过单次上限 5000 秒——请先切片";
+                        _job.Items[i].Message = "媒体 " + duration.ToString("0") + " 秒，超过单次上限 5000 秒——请先切片";
+                    }
+
+                    _job.Failed = _job.Failed + 1;
+                }
+
+                continue;
+            }
+
+            // [段2] 视频先抽音轨——16 kHz 单声道 wav 落临时目录，跑完即删（不碰原始素材）
+            string audioPath = file;
+            string tempWav = "";
+            bool prepared = true;
+            string prepareError = "";
+            if (video)
+            {
+                tempWav = Path.Combine(_tmpDir, "omni_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + ".wav");
+                lock (_gate)
+                {
+                    _job.Message = "第 " + (i + 1) + "/" + files.Count + " 条：" + name + "（抽音轨中…）";
+                }
+
+                if (!OmniEngine.ExtractAudio(cfg.PythonPath, file, tempWav))
+                {
+                    prepared = false;
+                    prepareError = "抽音轨失败：解释器或 PyAV 不可用，或容器格式不支持";
+                }
+                else
+                {
+                    audioPath = tempWav;
+                    lock (_gate)
+                    {
+                        _job.Message = "第 " + (i + 1) + "/" + files.Count + " 条：" + name + "（转写中…）";
+                    }
+                }
+            }
+
+            if (!prepared)
+            {
+                lock (_gate)
+                {
+                    if (i < _job.Items.Count)
+                    {
+                        _job.Items[i].State = "error";
+                        _job.Items[i].Message = prepareError;
                     }
 
                     _job.Failed = _job.Failed + 1;
@@ -648,13 +728,18 @@ public sealed class OmniService
             }
 
             int maxTokens = NFor(duration, cfg.Ctx, cfg.MaxTokens);
+            lock (_gate)
+            {
+                _job.Message = "第 " + (i + 1) + "/" + files.Count + " 条：" + name + "（转写中…）";
+            }
+
             string tag = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + i.ToString("000");
             OmniRunResult result = await _engine.RunAsync(new OmniRunRequest
             {
                 CliPath = cfg.CliPath,
                 ModelPath = cfg.ModelPath,
                 MmprojPath = cfg.MmprojPath,
-                AudioPath = file,
+                AudioPath = audioPath,
                 Prompt = cfg.Prompt,
                 Ctx = cfg.Ctx,
                 MaxTokens = maxTokens,
@@ -663,6 +748,19 @@ public sealed class OmniService
                 LogDir = _logDir,
                 Tag = tag,
             }, CancellationToken.None).ConfigureAwait(false);
+
+            // [段3] 临时 wav 用完即删（失败也不留——原始素材不受影响）
+            if (tempWav.Length > 0)
+            {
+                try
+                {
+                    File.Delete(tempWav);
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine("删临时音轨失败：" + tempWav + " · " + ex.Message);
+                }
+            }
 
             string textFile = "";
             if (result.Ok && cfg.SaveText)
@@ -689,7 +787,7 @@ public sealed class OmniService
                     item.Chars = result.Ok ? result.Text.Length : 0;
                     item.AudioSeconds = Math.Round(duration, 1);
                     item.ElapsedSeconds = Math.Round((DateTime.Now - itemStarted).TotalSeconds, 1);
-                    item.Message = result.Message;
+                    item.Message = (video ? "视频抽音轨 · " : "") + result.Message;
                 }
 
                 if (result.Ok)

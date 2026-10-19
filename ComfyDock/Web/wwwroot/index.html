@@ -706,6 +706,244 @@
             </div>
           </div>
         </div>
+
+        <div id="genPanelRvc" style="display:none">
+          <div class="sub-tabs">
+            <button class="sub-tab on" data-rvc-view="gen">参数与变声</button>
+            <button class="sub-tab" data-rvc-view="env">环境与模型</button>
+          </div>
+
+          <div id="rvcViewGen">
+            <div class="rh-block">
+              <h4>输入（一段音频，或一个目录——目录只取一层，不递归）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <input type="text" id="rvcInput" style="width:520px" title="待变声的音频完整路径，或一个音频目录" placeholder="D:\音频\某一段.wav 或 D:\音频\某个目录">
+                  <button class="btn-mini" id="rvcPickFile">选音频</button>
+                  <button class="btn-mini" id="rvcPickDir">选目录</button>
+                </div>
+                <div class="moss-line">
+                  <label title="音色模型 = 目标音色。模型住 ComfyUI 的 models\RVC\weights，配套检索索引放 models\RVC\indices">音色</label>
+                  <select id="rvcModel" class="wide"></select>
+                  <span class="path" id="rvcModelLine">—</span>
+                </div>
+                <div class="moss-line">
+                  <label title="F0 取法：rmvpe 最准（推荐）；pm 最快；harvest 最稳但慢；crepe 介于其间">F0 取法</label>
+                  <select id="rvcF0Method">
+                    <option value="rmvpe">rmvpe（推荐，音准最好）</option>
+                    <option value="pm">pm（最快，音准一般）</option>
+                    <option value="harvest">harvest（慢，稳）</option>
+                    <option value="crepe">crepe（折中）</option>
+                  </select>
+                  <label title="变调半音数：男声→女声约 +12；女声→男声约 -12；同性别 ±0~2 微调">变调</label>
+                  <input type="number" id="rvcF0UpKey" step="1" min="-24" max="24" style="width:70px">
+                  <label title="说话人编号（模型内置音色编号，多数模型只有 0）">说话人</label>
+                  <input type="number" id="rvcSid" step="1" min="0" style="width:70px">
+                </div>
+                <div class="moss-line">
+                  <label title="检索混合比例：把目标音色的训练特征按这个比例混进输入特征。越高越像训练音色、咬字越糊；0 = 完全不挂索引">检索混合</label>
+                  <input type="number" id="rvcIndexRate" step="0.05" min="0" max="1" style="width:70px">
+                  <label title="清辅音保护：越小越保护气声/齿音不被吃掉；0.5 = 关闭保护">保护</label>
+                  <input type="number" id="rvcProtect" step="0.01" min="0" max="0.5" style="width:70px">
+                  <label title="响度混合：0 = 完全用输出的响度；1 = 完全用输入的响度（更接近原音频的起伏）">响度混合</label>
+                  <input type="number" id="rvcRmsMixRate" step="0.05" min="0" max="1" style="width:70px">
+                </div>
+                <div class="moss-line">
+                  <label title="harvest 取法的中值滤波半径（0~7），其余取法忽略">滤波半径</label>
+                  <input type="number" id="rvcFilterRadius" step="1" min="0" max="7" style="width:70px">
+                  <label title="输出重采样率：0 = 用模型自带采样率（不重采样）">输出采样率</label>
+                  <select id="rvcResampleSr">
+                    <option value="0">模型自带</option>
+                    <option value="32000">32000</option>
+                    <option value="40000">40000</option>
+                    <option value="44100">44100</option>
+                    <option value="48000">48000</option>
+                  </select>
+                  <label class="moss-chk" title="半精度推理：省显存、略快；CPU 上自动关闭"><input type="checkbox" id="rvcHalf"> 半精度</label>
+                </div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="rvcSave">保存参数</button>
+                  <button class="btn-primary" id="rvcGenerate">开始变声</button>
+                  <button class="btn-mini" id="rvcStop" title="把常驻引擎停掉（显存还回去；在跑的这一段作废）">停止引擎</button>
+                  <span class="path" id="rvcJobLine">—</span>
+                </div>
+
+                <details class="moss-help">
+                  <summary>参数说明（每个选项是什么效果 / 什么时候该改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>这是在干什么</b>——RVC 把一段人声的「音色」换成另一个音色，内容（说了什么、什么语调）保留。链路是：HuBERT 提内容特征 → 用检索索引往目标音色上拉 → 提取基频 F0 → 生成器按 F0 与内容特征重新合成波形。</div>
+                    <div class="moss-help-item"><b>模型住哪</b>——音色模型（<code>.pth</code>）与检索索引（<code>.index</code>）都在本机 ComfyUI 的 <code>models\RVC\</code> 下，特征提取器（HuBERT）与基频提取器（RMVPE）也在那儿。软件本体只带推理代码与面板，<b>不打包权重</b>。</div>
+                    <div class="moss-help-item"><b>音色</b>——选一个 <code>.pth</code>。名字对得上的 <code>.index</code> 会自动挂上（面板会显示「索引：xxx」）；没索引也能跑，只是没那么贴训练音色。</div>
+                    <div class="moss-help-item"><b>F0 取法</b>（默认 rmvpe）——决定「音高曲线怎么测」。<br>· <em>rmvpe</em>：神经网提取，音准与鲁棒性最好，显存多占一点，默认就用它。<br>· <em>pm</em>：Parselmouth（Praat）自相关，最快，但噪声与气声段容易测错。<br>· <em>harvest</em>：pyworld，最稳最慢，适合干净清唱素材。<br>· <em>crepe</em>：神经网 + 中值滤波，介于其间。<br>音高测错会直接表现成跑调或电音——先换 rmvpe 试。</div>
+                    <div class="moss-help-item"><b>变调</b>（默认 0）——把整段音高平移 N 个半音：男声转女声约 <code>+12</code>，女声转男声约 <code>-12</code>；同性别之间通常 ±0~2 微调即可。<b>只改变调，不改变语速</b>（时长由内容特征决定）。</div>
+                    <div class="moss-help-item"><b>说话人</b>（默认 0）——模型内部的音色编号，多数单人模型只有 0；多人模型（如 109 人那种）才需要切。</div>
+                    <div class="moss-help-item"><b>检索混合</b>（默认 0.75）——把目标音色训练时留下的特征按这个比例混进输入特征。高（0.8~1.0）更像训练音色但咬字更糊；低（0.3~0.5）咬字清楚但音色没那么贴；<b>0 = 完全不挂索引</b>（用索引文件里那条链跑，速度快一点）。没有索引文件时这一项自动失效。</div>
+                    <div class="moss-help-item"><b>保护</b>（默认 0.33）——清辅音保护：气声、齿音这类「没有明确音高」的段落按比例保留原声特征，防止被合成器吃掉。越小保护越强（0.2 更保气声，但可能带出原音色的杂音）；<b>0.5 = 关闭保护</b>。</div>
+                    <div class="moss-help-item"><b>响度混合</b>（默认 0.25）——输出波形的响度曲线按这个比例混回输入的响度。0 = 完全用输出自己的响度（更平）；1 = 完全跟输入（原音频的强弱起伏保留）。听着「忽大忽小」就调低，听着「太平没起伏」就调高。</div>
+                    <div class="moss-help-item"><b>滤波半径</b>（默认 3）——只有 harvest 取法用得到，做中值滤波平滑音高曲线；其余取法忽略这一项。</div>
+                    <div class="moss-help-item"><b>输出采样率</b>（默认模型自带）——模型训练时的采样率（32k / 40k / 48k）就是它的原生输出，改成别的值会做一次重采样，除了「必须喂给某个只吃 44.1k 的软件」之外没有好处。</div>
+                    <div class="moss-help-item"><b>半精度</b>（默认开）——fp16 推理，省显存、略快；CPU 上自动关闭（CPU 跑半精度反而慢）。</div>
+                    <div class="moss-help-item"><b>停止引擎</b>——常驻引擎会一直占着显存（HuBERT + 一个音色模型）。要跑 ComfyUI 出图、或者今天不打算再变声，点它把显存还回去；下次「开始变声」会自动重新加载（约 5~15 秒）。</div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>出音（产物落 out\rvc，文件名 = 时间戳_输入_音色）</h4>
+              <div class="rh-list" id="rvcJob"></div>
+              <div id="rvcAudios"></div>
+              <div class="rh-list" id="rvcOutputs"></div>
+            </div>
+          </div>
+
+          <div id="rvcViewEnv" style="display:none">
+            <div class="sub-head">
+              <button class="btn-mini" id="rvcReload">重新检测</button>
+              <button class="btn-mini" id="rvcOpenOut">打开产物目录</button>
+              <span class="spacer"></span>
+              <span class="path" id="rvcEnvLine">检测中…</span>
+            </div>
+
+            <div class="rh-block">
+              <h4>环境（解释器 python_embeded / 推理代码 / HuBERT / RMVPE / Python 依赖）</h4>
+              <div class="rh-list" id="rvcEnv"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>音色模型（weights 目录，配套索引在 indices）</h4>
+              <div class="rh-list" id="rvcModels"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>路径（改完点保存；引擎会按新路径重载，下一段生效）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label>解释器</label><input type="text" id="rvcPythonPath" style="width:520px" title="本机 ComfyUI 的 python_embeded\python.exe（RVC 依赖装在这里）">
+                </div>
+                <div class="moss-line">
+                  <label>推理代码</label><input type="text" id="rvcRepoDir" style="width:520px" title="含 rvc_lite 包的目录（随 ComfyDock 走，现放 runtime\rvc）">
+                </div>
+                <div class="moss-line">
+                  <label>模型根目录</label><input type="text" id="rvcModelsRoot" style="width:520px" title="ComfyUI 下的 models\RVC（weights / indices / hubert / rmvpe 四个子目录）">
+                </div>
+                <div class="moss-line">
+                  <label>推理设备</label>
+                  <select id="rvcDevice" title="cuda 走显卡；cpu 也能跑但很慢（用于排查显卡问题）">
+                    <option value="cuda">cuda（显卡）</option>
+                    <option value="cpu">cpu（慢，排查用）</option>
+                  </select>
+                  <button class="btn-mini" id="rvcSavePaths">保存路径</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="genPanelOmni" style="display:none">
+          <div class="sub-tabs">
+            <button class="sub-tab on" data-omni-view="gen">参数与转写</button>
+            <button class="sub-tab" data-omni-view="env">环境与模型</button>
+          </div>
+
+          <div id="omniViewGen">
+            <div class="rh-block">
+              <h4>输入（音频或视频；目录只取一层，不递归）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <input type="text" id="omniInput" style="width:520px" title="待转写的音频 / 视频完整路径，或一个目录（音频与视频都收）" placeholder="D:\录音\某一段.mp3 · D:\录像\某一段.mp4 · 或一个目录">
+                  <button class="btn-mini" id="omniPickFile">选音频 / 视频</button>
+                  <button class="btn-mini" id="omniPickDir">选目录</button>
+                </div>
+                <div class="moss-line">
+                  <span class="path" style="white-space:normal" title="视频会先抽成 16 kHz 单声道 wav 再送模型，原始视频不动">视频会自动抽音轨（16 kHz 单声道）再送模型——原始文件不动</span>
+                </div>
+                <details class="moss-help" id="omniPromptBox">
+                  <summary>提示词（默认：按时间 + 内容的逐字稿，一般不用改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-line" style="margin-bottom:6px">
+                      <span class="path" style="white-space:normal">默认提示词已经按「[mm:ss]内容」逐字稿口径写好，直接点「开始转写」即可；要换格式（例如加说话人、只要纯正文）才需要改这里。</span>
+                      <button class="btn-mini" id="omniPromptDefault" title="把提示词恢复成内置默认（按时间 + 内容的逐字稿）">恢复默认</button>
+                    </div>
+                    <textarea id="omniPrompt" rows="6" style="width:100%;box-sizing:border-box;font-family:inherit" title="提示词原文：任务（怎么分段 / 时间写什么格式 / 要不要说话人）"></textarea>
+                  </div>
+                </details>
+                <div class="moss-line">
+                  <label title="上下文长度：音频与输出共用；65536 = 模型原生上限，改小会截断转写">上下文</label>
+                  <input type="number" id="omniCtx" step="1024" min="2048" max="65536" style="width:90px">
+                  <label title="生成上限（token）：0 = 按音频时长自动（6.5 token/音频秒 + 512）；给少了转写会被静默截断">生成上限</label>
+                  <input type="number" id="omniMaxTokens" step="256" min="0" style="width:90px">
+                  <label title="MoE 专家权重留 CPU 的层数：8 G 卡用 48；显存越大可以越小、越快">NCMOE</label>
+                  <input type="number" id="omniNcmoe" step="1" min="0" max="99" style="width:70px">
+                  <label class="moss-chk" title="勾上：每条结果落 out\omni\&lt;媒体名&gt;.txt"><input type="checkbox" id="omniSaveText" checked> 落 txt</label>
+                </div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="omniSave">保存参数</button>
+                  <button class="btn-primary" id="omniTranscribe">开始转写</button>
+                  <button class="btn-mini" id="omniStop" title="结束在跑的引擎（这一条作废；显存还回去）">停止</button>
+                  <span class="path" id="omniJobLine">—</span>
+                </div>
+
+                <details class="moss-help">
+                  <summary>参数说明（每个选项是什么效果 / 什么时候该改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>这是在干什么</b>——Qwen3-Omni-30B-A3B（GGUF Q4_K_M）经 llama.cpp 把一段音频整条转成文字。音频入口在 <code>mmproj</code>（AuT 音频编码器），主模型压 Q4 不影响音频编码质量。不切片、不开 ComfyUI 服务、不开端口。</div>
+                    <div class="moss-help-item"><b>模型与引擎住哪</b>——主模型与 <code>mmproj</code> 在 ComfyUI 的 <code>models\LLM</code>（合计约 20.8 G），引擎 <code>llama-mtmd-cli.exe</code> 在 <code>ComfyUI\tools\llama-omni\bin</code>——<b>都随 ComfyUI 走，软件本体不打包、不复制</b>。</div>
+                    <div class="moss-help-item"><b>输入</b>——音频或视频，也可以给一个目录（只取一层，音频与视频都收）。<b>视频会先抽成 16 kHz 单声道 wav 再送模型</b>（PyAV 解码），临时 wav 跑完即删，原始视频不动；视频没有音轨直接报错，不静默跳过。</div>
+                    <div class="moss-help-item"><b>提示词</b>（默认不用改）——默认就是「按时间 + 内容的逐字稿」：每行 <code>[mm:ss]内容</code>，按实际说话顺序、不合并不概括。要加说话人、要纯正文、要整段不分行，才需要展开改它。</div>
+                    <div class="moss-help-item"><b>上下文</b>（默认 65536）——模型原生上限，音频 token（约 13.05 个/音频秒）与输出 token 共用它。单次输入上限 5000 秒（约 83 分钟）；改小会让长音频的转写被截断，一般不动。</div>
+                    <div class="moss-help-item"><b>生成上限</b>（默认 0 = 自动）——自动口径 = <code>min(6.5 × 音频秒 + 512, 上下文 − 13.05 × 音频秒 − 456)</code>。给少了转写会被静默截断（尾巴丢掉）；只有想限制输出长度或做对比实验时才手填。</div>
+                    <div class="moss-help-item"><b>NCMOE</b>（默认 48）——把前 N 层 MoE 专家权重留在 CPU：30B 装进 8 G 显存的标准打法。显存越大可以调小（更快），调到 0 = 全放显存（≥ 24 G 才够）；显存不够会直接 OOM。</div>
+                    <div class="moss-help-item"><b>落 txt</b>（默认开）——每条结果写 <code>out\omni\&lt;媒体名&gt;.txt</code>，内容是引擎输出原样。关掉就只在面板里看，不碰磁盘。</div>
+                    <div class="moss-help-item"><b>时间列是模型推的</b>——不是真实时间戳：段内时间可能溢出段长，长段会被并成一行。内容列偶有人名 / 机构名幻觉，关键字段建议与来源核对。</div>
+                    <div class="moss-help-item"><b>退化截断</b>——连续同句重复超过 5 次判为退化：保留前 5 行 + 一行标注，其后丢弃。看到这行标注说明这一段模型跑飞了，换提示词或切片重跑。</div>
+                    <div class="moss-help-item"><b>停止</b>——结束在跑的引擎进程（这一条作废，显存还回去）。引擎每条都重新加载模型（约 30~60 秒），所以批量跑比单条更划算。</div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>转写结果（引擎输出原样；产物落 out\omni）</h4>
+              <div class="rh-list" id="omniJob"></div>
+              <textarea id="omniText" readonly rows="12" style="width:100%;box-sizing:border-box;font-family:inherit;margin:6px 0" placeholder="单条转写完成后正文显示在这里；批量时点下方产物逐条查看"></textarea>
+              <div class="rh-list" id="omniOutputs"></div>
+            </div>
+          </div>
+
+          <div id="omniViewEnv" style="display:none">
+            <div class="sub-head">
+              <button class="btn-mini" id="omniReload">重新检测</button>
+              <button class="btn-mini" id="omniOpenOut">打开产物目录</button>
+              <span class="spacer"></span>
+              <span class="path" id="omniEnvLine">检测中…</span>
+            </div>
+
+            <div class="rh-block">
+              <h4>环境（引擎 / 主模型 / 音频编码器 / 解释器）</h4>
+              <div class="rh-list" id="omniEnv"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>路径（改完点保存；下一批生效）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label>引擎</label><input type="text" id="omniCliPath" style="width:520px" title="llama-mtmd-cli.exe（同目录 DLL 一起，缺一个都起不来）">
+                </div>
+                <div class="moss-line">
+                  <label>主模型</label><input type="text" id="omniModelPath" style="width:520px" title="Qwen3-Omni-30B-A3B-Instruct-Q4_K_M.gguf（住 ComfyUI\models\LLM）">
+                </div>
+                <div class="moss-line">
+                  <label>音频编码器</label><input type="text" id="omniMmprojPath" style="width:520px" title="mmproj-Qwen3-Omni-30B-A3B-Instruct-bf16.gguf（音频入口在这里）">
+                </div>
+                <div class="moss-line">
+                  <label>解释器</label><input type="text" id="omniPythonPath" style="width:520px" title="python_embeded\python.exe——探媒体时长 + 视频抽音轨（PyAV）；缺了只能转音频、按固定上限">
+                  <button class="btn-mini" id="omniSavePaths">保存路径</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2015,6 +2253,8 @@
       { id: "moss", name: "MOSS-Image", note: "文生图 / 图生图 · 8 步加速" },
       { id: "tts", name: "IrodoriTTS", note: "日语语音合成 · 零样本音色克隆" },
       { id: "tagger", name: "WD 打标", note: "图片反推 Danbooru 标签" },
+      { id: "rvc", name: "RVC 变声", note: "音色转换 · 本地离线" },
+      { id: "omni", name: "Qwen3-Omni", note: "音频转写 · 本地离线" },
     ];
     let genId = "moss";
 
@@ -2034,12 +2274,18 @@
       const mossPanel = document.getElementById("genPanelMoss");
       const ttsPanel = document.getElementById("genPanelTts");
       const taggerPanel = document.getElementById("genPanelTagger");
+      const rvcPanel = document.getElementById("genPanelRvc");
+      const omniPanel = document.getElementById("genPanelOmni");
       if (mossPanel) { mossPanel.style.display = id === "moss" ? "block" : "none"; }
       if (ttsPanel) { ttsPanel.style.display = id === "tts" ? "block" : "none"; }
       if (taggerPanel) { taggerPanel.style.display = id === "tagger" ? "block" : "none"; }
+      if (rvcPanel) { rvcPanel.style.display = id === "rvc" ? "block" : "none"; }
+      if (omniPanel) { omniPanel.style.display = id === "omni" ? "block" : "none"; }
       if (id === "tts") { loadTts(); startTtsPoller(); }
       if (id === "moss") { loadMoss(); startMossPoller(); }
       if (id === "tagger") { loadTagger(); startTaggerPoller(); }
+      if (id === "rvc") { loadRvc(); startRvcPoller(); }
+      if (id === "omni") { loadOmni(); startOmniPoller(); }
     }
 
     // 生成器内部的子签：参数与出图（主面）/ 环境与依赖（内核 / 插件 / 显卡 / 权重下载）
@@ -2796,6 +3042,419 @@
       }, 2000);
     }
 
+    // ---- 本地生成（RVC 变声）：输入音频 / 音色 / F0 参数 / 产物 ----
+    // 后端是常驻 worker（HuBERT 只加载一次，音色模型按需切换），状态靠 /api/rvc/live 轮询。
+    let rvcData = null;
+    let rvcTimer = null;
+
+    function setRvcView(view) {
+      const gen = document.getElementById("rvcViewGen");
+      const env = document.getElementById("rvcViewEnv");
+      if (!gen || !env) { return; }
+      gen.style.display = view === "env" ? "none" : "block";
+      env.style.display = view === "env" ? "block" : "none";
+      for (const tab of document.querySelectorAll("#genPanelRvc .sub-tab")) {
+        tab.classList.toggle("on", tab.dataset.rvcView === view);
+      }
+    }
+
+    function rvcCfg() {
+      return (rvcData && rvcData.config) || {};
+    }
+
+    async function loadRvc() {
+      try {
+        rvcData = await fetch("/api/rvc", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        rvcData = null;
+        document.getElementById("rvcEnvLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      fillRvcForm();
+      renderRvc();
+    }
+
+    function fillRvcForm() {
+      const cfg = rvcCfg();
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) { el.value = value; }
+      };
+
+      set("rvcInput", cfg.inputPath || "");
+      set("rvcF0UpKey", cfg.f0UpKey === undefined ? 0 : cfg.f0UpKey);
+      set("rvcSid", cfg.sid === undefined ? 0 : cfg.sid);
+      set("rvcF0Method", cfg.f0Method || "rmvpe");
+      set("rvcIndexRate", cfg.indexRate === undefined ? 0.75 : cfg.indexRate);
+      set("rvcProtect", cfg.protect === undefined ? 0.33 : cfg.protect);
+      set("rvcRmsMixRate", cfg.rmsMixRate === undefined ? 0.25 : cfg.rmsMixRate);
+      set("rvcFilterRadius", cfg.filterRadius === undefined ? 3 : cfg.filterRadius);
+      set("rvcResampleSr", String(cfg.resampleSr || 0));
+      set("rvcPythonPath", cfg.pythonPath || "");
+      set("rvcRepoDir", cfg.repoDir || "");
+      set("rvcModelsRoot", cfg.modelsRoot || "");
+      set("rvcDevice", cfg.device || "cuda");
+      document.getElementById("rvcHalf").checked = cfg.half !== false;
+
+      renderRvcModels();
+    }
+
+    function renderRvcModels() {
+      const box = document.getElementById("rvcModel");
+      if (!box) { return; }
+      const list = (rvcData && rvcData.models) || [];
+      const picked = rvcCfg().model || "";
+      if (list.length === 0) {
+        box.innerHTML = '<option value="">（weights 目录里没有 .pth）</option>';
+        return;
+      }
+
+      box.innerHTML = list.map(m =>
+        '<option value="' + rhText(m.name) + '"' + (m.name === picked ? " selected" : "") + ">"
+        + rhText(m.title) + "</option>"
+      ).join("");
+
+      if (!picked && list.length > 0) { box.value = list[0].name; }
+    }
+
+    function renderRvc() {
+      if (!rvcData) { return; }
+      const env = rvcData.env || {};
+      const engine = rvcData.engine || {};
+      const job = rvcData.job || {};
+      const cfg = rvcCfg();
+
+      const modelName = document.getElementById("rvcModel").value || cfg.model || "";
+      const entry = ((rvcData.models) || []).find(m => m.name === modelName);
+      document.getElementById("rvcModelLine").textContent = entry
+        ? (entry.index ? "索引：" + entry.index : "无配套索引（检索混合不生效）")
+        : "—";
+
+      document.getElementById("rvcEnvLine").textContent = (env.canGenerate ? "可变声" : "前置条件不足")
+        + " · 引擎 " + (engine.state || "stopped")
+        + (engine.device ? " · " + engine.device : "")
+        + " · 音色 " + (env.modelCount || 0) + " 个"
+        + " · 产物 " + (rvcData.outDir || "—");
+
+      const rows = [];
+      const row = (label, ok, text) =>
+        '<div class="rh-item"><span class="grow">' + rhText(label) + "</span>"
+        + '<span class="' + (ok ? "rh-dim" : "rh-bad") + '" title="' + rhText(text) + '">' + rhText(text) + "</span></div>";
+
+      rows.push(row("解释器（python_embeded）", env.pythonOk, cfg.pythonPath || "未配置"));
+      rows.push(row("推理代码（rvc_lite）", env.repoOk, cfg.repoDir || "未配置"));
+      rows.push(row("HuBERT 特征提取器", env.hubertOk, (cfg.modelsRoot || "未配置") + "\\hubert"));
+      rows.push(row("RMVPE 基频提取器", env.rmvpeOk, (cfg.modelsRoot || "未配置") + "\\rmvpe"));
+      rows.push(row("Python 依赖", env.depsOk, env.depsOk ? "齐备" : ("缺 " + (env.missingDeps || []).join(" / "))));
+      rows.push(row("音色模型", (env.modelCount || 0) > 0, (env.modelCount || 0) + " 个 · 索引 " + (env.indexCount || 0) + " 个"));
+      rows.push(row("常驻引擎", engine.state === "ready" || engine.state === "busy",
+        (engine.state || "stopped") + (engine.message ? " · " + engine.message : "")));
+      if (engine.torch) {
+        rows.push(row("内核", true, "torch " + engine.torch + (engine.cuda ? " · CUDA 可用" : " · 仅 CPU")
+          + (engine.half ? " · 半精度" : " · 全精度")));
+      }
+      for (const blocker of (env.blockers || [])) {
+        rows.push(row("缺", false, blocker));
+      }
+      document.getElementById("rvcEnv").innerHTML = rows.join("");
+
+      const models = ((rvcData.models) || []).map(m =>
+        '<div class="rh-item"><span class="grow">' + rhText(m.title) + "</span>"
+        + '<span class="' + (m.index ? "rh-dim" : "rh-bad") + '" title="' + rhText(m.index || "") + '">'
+        + (m.index ? rhText(m.index) : "无索引") + " · " + mossBytes(m.bytes) + "</span></div>"
+      );
+      document.getElementById("rvcModels").innerHTML = models.join("")
+        || '<div class="rh-item"><span class="grow rh-dim">weights 目录里没有 .pth</span></div>';
+
+      const jobRows = [];
+      jobRows.push('<div class="rh-item"><span class="grow">' + rhText(job.state || "idle")
+        + " · " + rhText(job.message || "还没有任务") + "</span>"
+        + '<span class="rh-dim">' + rhText(job.model ? job.model : "")
+        + (job.audioSeconds ? " · " + job.audioSeconds + " 秒音频" : "")
+        + (job.elapsedSeconds ? " · 耗时 " + job.elapsedSeconds + " 秒" : "") + "</span></div>");
+      if (job.inputPreview) {
+        jobRows.push('<div class="rh-item"><span class="grow rh-dim">' + rhText(job.inputPreview) + "</span></div>");
+      }
+      document.getElementById("rvcJob").innerHTML = jobRows.join("");
+      document.getElementById("rvcJobLine").textContent = (job.state || "idle") + " · " + (job.message || "—");
+
+      const audios = [];
+      if (job.file && job.state === "done") {
+        audios.push('<audio controls style="width:100%;margin:6px 0" src="/api/rvc/audio?name='
+          + encodeURIComponent(job.file) + "&t=" + Date.now() + '"></audio>');
+      }
+      document.getElementById("rvcAudios").innerHTML = audios.join("");
+
+      const outs = ((rvcData.outputs) || []).map(o =>
+        '<div class="rh-item"><span class="grow">' + rhText(o.name) + "</span>"
+        + '<span class="rh-dim">' + rhText(o.at) + " · " + mossBytes(o.bytes) + "</span>"
+        + '<audio controls preload="none" style="height:26px" src="/api/rvc/audio?name=' + encodeURIComponent(o.name) + '"></audio>'
+        + "</div>"
+      );
+      document.getElementById("rvcOutputs").innerHTML = outs.join("")
+        || '<div class="rh-item"><span class="grow rh-dim">还没有产物</span></div>';
+    }
+
+    function rvcCollect() {
+      const cfg = rvcCfg();
+      return {
+        model: document.getElementById("rvcModel").value || "",
+        inputPath: document.getElementById("rvcInput").value,
+        sid: Math.round(mossNum("rvcSid", 0)),
+        f0UpKey: mossNum("rvcF0UpKey", 0),
+        f0Method: document.getElementById("rvcF0Method").value,
+        indexRate: mossNum("rvcIndexRate", 0.75),
+        protect: mossNum("rvcProtect", 0.33),
+        rmsMixRate: mossNum("rvcRmsMixRate", 0.25),
+        filterRadius: Math.round(mossNum("rvcFilterRadius", 3)),
+        resampleSr: parseInt(document.getElementById("rvcResampleSr").value, 10) || 0,
+        half: document.getElementById("rvcHalf").checked,
+        device: document.getElementById("rvcDevice").value || cfg.device || "cuda",
+        pythonPath: document.getElementById("rvcPythonPath").value || cfg.pythonPath || "",
+        repoDir: document.getElementById("rvcRepoDir").value || cfg.repoDir || "",
+        modelsRoot: document.getElementById("rvcModelsRoot").value || cfg.modelsRoot || ""
+      };
+    }
+
+    async function rvcSave(silent) {
+      const data = await rhPost("/api/rvc/config", rvcCollect());
+      if (!data || !data.ok) { toast("保存失败：" + ((data && data.error) || "未知")); return false; }
+      if (rvcData) { rvcData.config = data.config; }
+      if (!silent) { toast("参数已保存"); }
+      return true;
+    }
+
+    async function rvcGenerate() {
+      if (!(await rvcSave(true))) { return; }
+      const data = await rhPost("/api/rvc/generate", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      if (data.job && rvcData) { rvcData.job = data.job; renderRvc(); }
+      startRvcPoller();
+    }
+
+    async function rvcPick(kind) {
+      toast("等系统对话框选" + (kind === "dir" ? "目录" : "音频") + "…");
+      const data = await rhPost("/api/rvc/pick", { kind: kind });
+      if (!data || !data.ok) { toast("选择失败：" + ((data && data.error) || "未知")); return; }
+      if (data.path) { document.getElementById("rvcInput").value = data.path; }
+    }
+
+    // 只在「本地生成 → RVC 变声」页签且确实有在途任务时轮询
+    function startRvcPoller() {
+      if (rvcTimer) { return; }
+      rvcTimer = window.setInterval(async () => {
+        if (cap !== "moss" || genId !== "rvc") { return; }
+        const job = (rvcData && rvcData.job) || {};
+        const engine = (rvcData && rvcData.engine) || {};
+        const busyJob = job.state === "submitted" || job.state === "running";
+        const busyEngine = engine.state === "starting";
+        if (!busyJob && !busyEngine) { return; }
+
+        try {
+          const live = await fetch("/api/rvc/live", { cache: "no-store" }).then(r => r.json());
+          if (!rvcData) { rvcData = {}; }
+          const wasBusy = job.state === "submitted" || job.state === "running";
+          rvcData.job = live.job;
+          rvcData.engine = live.engine;
+          renderRvc();
+          if (wasBusy && live.job && (live.job.state === "done" || live.job.state === "error")) { await loadRvc(); }
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 2500);
+    }
+
+    // ---- 本地生成（Qwen3-Omni 转写）：输入音频 / 提示词 / 参数 / 产物 ----
+    // 引擎是 llama.cpp 的 llama-mtmd-cli（每条重新加载模型），状态靠 /api/omni/live 轮询。
+    let omniData = null;
+    let omniTimer = null;
+
+    function setOmniView(view) {
+      const gen = document.getElementById("omniViewGen");
+      const env = document.getElementById("omniViewEnv");
+      if (!gen || !env) { return; }
+      gen.style.display = view === "env" ? "none" : "block";
+      env.style.display = view === "env" ? "block" : "none";
+      for (const tab of document.querySelectorAll("#genPanelOmni .sub-tab")) {
+        tab.classList.toggle("on", tab.dataset.omniView === view);
+      }
+    }
+
+    function omniCfg() {
+      return (omniData && omniData.config) || {};
+    }
+
+    async function loadOmni() {
+      try {
+        omniData = await fetch("/api/omni", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        omniData = null;
+        document.getElementById("omniEnvLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      fillOmniForm();
+      renderOmni();
+    }
+
+    function fillOmniForm() {
+      const cfg = omniCfg();
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) { el.value = value; }
+      };
+
+      set("omniInput", cfg.inputPath || "");
+      set("omniPrompt", cfg.prompt || (omniData && omniData.defaultPrompt) || "");
+      set("omniCtx", cfg.ctx === undefined ? 65536 : cfg.ctx);
+      set("omniMaxTokens", cfg.maxTokens === undefined ? 0 : cfg.maxTokens);
+      set("omniNcmoe", cfg.ncmoe === undefined ? 48 : cfg.ncmoe);
+      set("omniCliPath", cfg.cliPath || "");
+      set("omniModelPath", cfg.modelPath || "");
+      set("omniMmprojPath", cfg.mmprojPath || "");
+      set("omniPythonPath", cfg.pythonPath || "");
+      document.getElementById("omniSaveText").checked = cfg.saveText !== false;
+    }
+
+    function renderOmni() {
+      if (!omniData) { return; }
+      const env = omniData.env || {};
+      const engine = omniData.engine || {};
+      const job = omniData.job || {};
+      const cfg = omniCfg();
+
+      document.getElementById("omniEnvLine").textContent = (env.canGenerate ? "可转写" : "前置条件不足")
+        + " · 引擎 " + (engine.stage || "idle")
+        + " · 产物 " + (omniData.outDir || "—");
+
+      const rows = [];
+      const row = (label, ok, text) =>
+        '<div class="rh-item"><span class="grow">' + rhText(label) + "</span>"
+        + '<span class="' + (ok ? "rh-dim" : "rh-bad") + '" title="' + rhText(text) + '">' + rhText(text) + "</span></div>";
+
+      rows.push(row("引擎（llama-mtmd-cli）", env.cliOk, cfg.cliPath || "未配置"));
+      rows.push(row("主模型（Q4_K_M）", env.modelOk,
+        (cfg.modelPath || "未配置") + (env.modelOk ? " · " + mossBytes(env.modelBytes) : "")));
+      rows.push(row("音频编码器（mmproj）", env.mmprojOk,
+        (cfg.mmprojPath || "未配置") + (env.mmprojOk ? " · " + mossBytes(env.mmprojBytes) : "")));
+      rows.push(row("解释器（探时长 / 抽音轨）", env.pythonOk,
+        env.pythonOk ? (cfg.pythonPath || "") : ((cfg.pythonPath || "未配置") + " · 缺了只能转音频、按固定上限")));
+      rows.push(row("转写引擎", engine.running, engine.running
+        ? ("运行中 · pid " + engine.pid + " · " + engine.stage)
+        : "空闲（每条单独起进程，跑完自动退）"));
+      for (const blocker of (env.blockers || [])) {
+        rows.push(row("缺", false, blocker));
+      }
+      document.getElementById("omniEnv").innerHTML = rows.join("");
+
+      const jobRows = [];
+      jobRows.push('<div class="rh-item"><span class="grow">' + rhText(job.state || "idle")
+        + " · " + rhText(job.message || "还没有任务") + "</span>"
+        + '<span class="rh-dim">' + (job.total > 1 ? (job.done || 0) + "/" + job.total + " 条"
+          : (job.genTokens ? job.genTokens + " token" : ""))
+        + (job.elapsedSeconds ? " · 耗时 " + job.elapsedSeconds + " 秒" : "") + "</span></div>");
+      if (job.inputPreview) {
+        jobRows.push('<div class="rh-item"><span class="grow rh-dim">' + rhText(job.inputPreview) + "</span></div>");
+      }
+
+      const items = (job.items || []).map(it => {
+        const btn = it.file
+          ? '<button class="btn-mini" data-omni-file="' + rhText(it.file) + '">查看</button>'
+          : "";
+        return '<div class="rh-item"><span class="grow">' + rhText(it.name) + "</span>"
+          + '<span class="' + (it.state === "error" ? "rh-bad" : "rh-dim") + '">' + rhText(it.state)
+          + (it.chars ? " · " + it.chars + " 字" : "")
+          + (it.audioSeconds ? " · " + it.audioSeconds + " 秒音频" : "")
+          + (it.elapsedSeconds ? " · " + it.elapsedSeconds + " 秒" : "")
+          + (it.message ? " · " + rhText(it.message) : "") + "</span>" + btn + "</div>";
+      });
+      document.getElementById("omniJob").innerHTML = jobRows.concat(items).join("");
+      document.getElementById("omniJobLine").textContent = (job.state || "idle") + " · " + (job.message || "—");
+
+      if (job.text) {
+        const box = document.getElementById("omniText");
+        if (box.value !== job.text) { box.value = job.text; }
+      }
+
+      const outs = ((omniData.outputs) || []).map(o =>
+        '<div class="rh-item"><span class="grow">' + rhText(o.name) + "</span>"
+        + '<span class="rh-dim">' + rhText(o.at) + " · " + mossBytes(o.bytes) + "</span>"
+        + '<button class="btn-mini" data-omni-file="' + rhText(o.name) + '">查看</button>'
+        + "</div>"
+      );
+      document.getElementById("omniOutputs").innerHTML = outs.join("")
+        || '<div class="rh-item"><span class="grow rh-dim">还没有产物</span></div>';
+    }
+
+    function omniCollect() {
+      const cfg = omniCfg();
+      return {
+        inputPath: document.getElementById("omniInput").value,
+        prompt: document.getElementById("omniPrompt").value,
+        ctx: Math.round(mossNum("omniCtx", 65536)),
+        maxTokens: Math.round(mossNum("omniMaxTokens", 0)),
+        ncmoe: Math.round(mossNum("omniNcmoe", 48)),
+        ngl: cfg.ngl || 99,
+        saveText: document.getElementById("omniSaveText").checked,
+        cliPath: document.getElementById("omniCliPath").value || cfg.cliPath || "",
+        modelPath: document.getElementById("omniModelPath").value || cfg.modelPath || "",
+        mmprojPath: document.getElementById("omniMmprojPath").value || cfg.mmprojPath || "",
+        pythonPath: document.getElementById("omniPythonPath").value || cfg.pythonPath || ""
+      };
+    }
+
+    async function omniSave(silent) {
+      const data = await rhPost("/api/omni/config", omniCollect());
+      if (!data || !data.ok) { toast("保存失败：" + ((data && data.error) || "未知")); return false; }
+      if (omniData) { omniData.config = data.config; }
+      if (!silent) { toast("参数已保存"); }
+      return true;
+    }
+
+    async function omniGenerate() {
+      if (!(await omniSave(true))) { return; }
+      const data = await rhPost("/api/omni/transcribe", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      if (data.job && omniData) { omniData.job = data.job; renderOmni(); }
+      startOmniPoller();
+    }
+
+    async function omniPick(kind) {
+      toast("等系统对话框选" + (kind === "dir" ? "目录" : "音频 / 视频") + "…");
+      const data = await rhPost("/api/omni/pick", { kind: kind });
+      if (!data || !data.ok) { toast("选择失败：" + ((data && data.error) || "未知")); return; }
+      if (data.path) { document.getElementById("omniInput").value = data.path; }
+    }
+
+    async function omniViewText(name) {
+      try {
+        const text = await fetch("/api/omni/text?name=" + encodeURIComponent(name), { cache: "no-store" })
+          .then(r => r.text());
+        document.getElementById("omniText").value = text;
+      } catch (e) {
+        toast("读取失败：" + e.message);
+      }
+    }
+
+    // 只在「本地生成 → Qwen3-Omni」页签且确实有在途任务时轮询
+    function startOmniPoller() {
+      if (omniTimer) { return; }
+      omniTimer = window.setInterval(async () => {
+        if (cap !== "moss" || genId !== "omni") { return; }
+        const job = (omniData && omniData.job) || {};
+        const busy = job.state === "submitted" || job.state === "running";
+        if (!busy) { return; }
+
+        try {
+          const live = await fetch("/api/omni/live", { cache: "no-store" }).then(r => r.json());
+          if (!omniData) { omniData = {}; }
+          omniData.job = live.job;
+          omniData.engine = live.engine;
+          renderOmni();
+          if (live.job && (live.job.state === "done" || live.job.state === "error")) { await loadOmni(); }
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 2500);
+    }
+
     document.getElementById("capTabMoss").onclick = () => setCap("moss");
     renderGenTabs();
     document.getElementById("genTabs").onclick = (ev) => {
@@ -2903,6 +3562,59 @@
       if (!cancel) { return; }
       const data = await rhPost("/api/tagger/download/cancel", { id: cancel.getAttribute("data-tagger-cancel") });
       if (data) { toast(data.message || "已请求取消"); await loadTagger(); }
+    };
+
+    // RVC 变声——输入 / 参数 / 环境
+    for (const tab of document.querySelectorAll("#genPanelRvc .sub-tab")) {
+      tab.onclick = () => setRvcView(tab.dataset.rvcView);
+    }
+    document.getElementById("rvcReload").onclick = loadRvc;
+    document.getElementById("rvcSave").onclick = () => rvcSave(false);
+    document.getElementById("rvcSavePaths").onclick = () => rvcSave(false);
+    document.getElementById("rvcGenerate").onclick = rvcGenerate;
+    document.getElementById("rvcPickFile").onclick = () => rvcPick("audio");
+    document.getElementById("rvcPickDir").onclick = () => rvcPick("dir");
+    document.getElementById("rvcModel").onchange = () => { renderRvc(); };
+    document.getElementById("rvcStop").onclick = async () => {
+      const data = await rhPost("/api/rvc/stop", {});
+      toast((data && data.message) || "已停引擎");
+      await loadRvc();
+    };
+    document.getElementById("rvcOpenOut").onclick = async () => {
+      const data = await rhPost("/api/rvc/open-out", {});
+      if (data && !data.ok) { toast("打开失败：" + (data.error || "未知")); }
+    };
+
+    // Qwen3-Omni 转写——输入 / 提示词 / 参数 / 产物
+    for (const tab of document.querySelectorAll("#genPanelOmni .sub-tab")) {
+      tab.onclick = () => setOmniView(tab.dataset.omniView);
+    }
+    document.getElementById("omniReload").onclick = loadOmni;
+    document.getElementById("omniSave").onclick = () => omniSave(false);
+    document.getElementById("omniSavePaths").onclick = () => omniSave(false);
+    document.getElementById("omniTranscribe").onclick = omniGenerate;
+    document.getElementById("omniPickFile").onclick = () => omniPick("media");
+    document.getElementById("omniPickDir").onclick = () => omniPick("dir");
+    document.getElementById("omniPromptDefault").onclick = () => {
+      document.getElementById("omniPrompt").value = (omniData && omniData.defaultPrompt) || "";
+      toast("提示词已恢复默认（点「保存参数」生效）");
+    };
+    document.getElementById("omniStop").onclick = async () => {
+      const data = await rhPost("/api/omni/stop", {});
+      toast((data && data.message) || "已停引擎");
+      await loadOmni();
+    };
+    document.getElementById("omniOpenOut").onclick = async () => {
+      const data = await rhPost("/api/omni/open-out", {});
+      if (data && !data.ok) { toast("打开失败：" + (data.error || "未知")); }
+    };
+    document.getElementById("omniOutputs").onclick = (e) => {
+      const btn = e.target.closest("[data-omni-file]");
+      if (btn) { omniViewText(btn.getAttribute("data-omni-file")); }
+    };
+    document.getElementById("omniJob").onclick = (e) => {
+      const btn = e.target.closest("[data-omni-file]");
+      if (btn) { omniViewText(btn.getAttribute("data-omni-file")); }
     };
 
     // 依赖区事件委托——列表重建后绑定依然有效
