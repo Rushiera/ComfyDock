@@ -57,6 +57,9 @@ public sealed class RvcConfig
 
     /// <summary>模型根目录（ComfyUI\models\RVC，下含 weights / indices / hubert / rmvpe）。</summary>
     public string ModelsRoot { get; set; } = "";
+
+    /// <summary>批量变声的音色清单（多选；空 = 只用 <see cref="Model"/> 那一个）。</summary>
+    public List<string> Models { get; set; } = new List<string>();
 }
 
 /// <summary>
@@ -93,6 +96,45 @@ public sealed class RvcJobStatus
 
     /// <summary>结束时刻。</summary>
     public string FinishedAt { get; set; } = "";
+
+    /// <summary>本批共几条（单条任务也是 1）。</summary>
+    public int Total { get; set; }
+
+    /// <summary>本批已成功几条。</summary>
+    public int Done { get; set; }
+
+    /// <summary>本批失败几条。</summary>
+    public int Failed { get; set; }
+
+    /// <summary>逐条状态（批量变声；单条任务也有一条）。</summary>
+    public List<RvcJobItem> Items { get; set; } = new List<RvcJobItem>();
+}
+
+/// <summary>
+/// 批量变声里的一条（一段输入 × 一个音色）——面板逐条看成败，不看整体一句话。
+/// </summary>
+public sealed class RvcJobItem
+{
+    /// <summary>输入文件名。</summary>
+    public string Input { get; set; } = "";
+
+    /// <summary>用的音色模型文件名。</summary>
+    public string Model { get; set; } = "";
+
+    /// <summary>状态：pending / running / done / error。</summary>
+    public string State { get; set; } = "pending";
+
+    /// <summary>产物文件名（成功才有）。</summary>
+    public string File { get; set; } = "";
+
+    /// <summary>人话说明。</summary>
+    public string Message { get; set; } = "";
+
+    /// <summary>产物音频秒数。</summary>
+    public double AudioSeconds { get; set; }
+
+    /// <summary>这一条耗时（秒）。</summary>
+    public double ElapsedSeconds { get; set; }
 }
 
 /// <summary>
@@ -169,6 +211,12 @@ public sealed class RvcService
         ("librosa", "librosa"),
     };
 
+    /// <summary>认作音频的扩展名（输入给目录时按它筛一层）。</summary>
+    private static readonly string[] AudioExtensions = new string[]
+    {
+        ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".opus", ".wma",
+    };
+
     /// <summary>配置落盘路径。</summary>
     private readonly string _configPath;
 
@@ -213,6 +261,9 @@ public sealed class RvcService
         }
 
         ApplyEnginePaths();
+
+        // 实时段初始化（线 3 追加——读 rvc-realtime-config.json 并把路径推给流式 worker）
+        InitRealtime(defaults, dataDir);
     }
 
     /// <summary>产物落点目录。</summary>
@@ -245,8 +296,34 @@ public sealed class RvcService
                 ElapsedSeconds = _job.ElapsedSeconds,
                 SubmittedAt = _job.SubmittedAt,
                 FinishedAt = _job.FinishedAt,
+                Total = _job.Total,
+                Done = _job.Done,
+                Failed = _job.Failed,
+                Items = CopyItems(_job.Items),
             };
         }
+    }
+    /// <summary>逐条状态深拷贝（防外部改）。</summary>
+    /// <param name="items">源清单。</param>
+    /// <returns>拷贝。</returns>
+    private static List<RvcJobItem> CopyItems(List<RvcJobItem> items)
+    {
+        var list = new List<RvcJobItem>();
+        foreach (RvcJobItem item in items)
+        {
+            list.Add(new RvcJobItem
+            {
+                Input = item.Input,
+                Model = item.Model,
+                State = item.State,
+                File = item.File,
+                Message = item.Message,
+                AudioSeconds = item.AudioSeconds,
+                ElapsedSeconds = item.ElapsedSeconds,
+            });
+        }
+
+        return list;
     }
 
     /// <summary>面板快照——环境 + 配置 + 任务 + 引擎 + 音色模型清单 + 产物。</summary>
@@ -303,6 +380,7 @@ public sealed class RvcService
             _config.Protect = Clamp(next.Protect, 0, 0.5);
             _config.Device = string.IsNullOrEmpty(next.Device) ? "cuda" : next.Device;
             _config.Half = next.Half;
+            _config.Models = next.Models ?? new List<string>();
 
             if (next.PythonPath.Length > 0)
             {
@@ -342,27 +420,39 @@ public sealed class RvcService
         }
 
         RvcConfig snapshot;
+        List<string> inputs;
+        List<string> models;
+        RvcJobStatus batch;
         lock (_gate)
         {
             if (_job.State == "submitted" || _job.State == "running")
             {
-                return Task.FromResult((false, "上一段还在跑——先等它出来，或点「停止引擎」"));
+                return Task.FromResult((false, "上一批还在跑——先等它出来，或点「停止引擎」"));
             }
 
-            if (_config.Model.Length == 0)
+            string input = (_config.InputPath ?? "").Trim();
+            inputs = ExpandInputs(input);
+            if (inputs.Count == 0)
+            {
+                string shown = input;
+                if (shown.Length == 0)
+                {
+                    shown = "未填";
+                }
+
+                return Task.FromResult((false, "输入音频不在位：" + shown));
+            }
+
+            models = ExpandModels(_config);
+            if (models.Count == 0)
             {
                 return Task.FromResult((false, "没选音色模型"));
             }
 
-            string input = (_config.InputPath ?? "").Trim();
-            if (input.Length == 0 || !File.Exists(input))
-            {
-                return Task.FromResult((false, "输入音频不在位：" + (input.Length == 0 ? "未填" : input)));
-            }
-
             snapshot = new RvcConfig
             {
-                Model = _config.Model,
+                Model = models[0],
+                Models = models,
                 InputPath = input,
                 Sid = _config.Sid,
                 F0UpKey = _config.F0UpKey,
@@ -379,20 +469,58 @@ public sealed class RvcService
                 ModelsRoot = _config.ModelsRoot,
             };
 
-            _job = new RvcJobStatus
+            string preview;
+            if (inputs.Count == 1)
+            {
+                preview = Path.GetFileName(inputs[0]);
+            }
+            else
+            {
+                preview = Path.GetFileName(inputs[0]) + " 等 " + inputs.Count.ToString() + " 个文件";
+            }
+
+            string modelLabel;
+            if (models.Count == 1)
+            {
+                modelLabel = models[0];
+            }
+            else
+            {
+                modelLabel = models.Count.ToString() + " 个音色";
+            }
+
+            batch = new RvcJobStatus
             {
                 Id = DateTime.Now.ToString("HHmmss"),
                 State = "submitted",
-                Message = "已提交，等引擎接手…",
-                InputPreview = Path.GetFileName(input),
-                Model = snapshot.Model,
+                Message = "已提交 " + (inputs.Count * models.Count).ToString() + " 条，等引擎接手…",
+                InputPreview = preview,
+                Model = modelLabel,
                 SubmittedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
             };
+
+            foreach (string file in inputs)
+            {
+                foreach (string model in models)
+                {
+                    batch.Items.Add(new RvcJobItem
+                    {
+                        Input = Path.GetFileName(file),
+                        Model = model,
+                        State = "pending",
+                        Message = "排队中",
+                    });
+                }
+            }
+
+            batch.Total = batch.Items.Count;
+            _job = batch;
         }
 
-        _ = Task.Run(() => RunJobAsync(snapshot));
-        return Task.FromResult((true, "已提交（音色 " + Path.GetFileNameWithoutExtension(snapshot.Model)
-            + " · F0 " + snapshot.F0Method + " · 变调 " + snapshot.F0UpKey.ToString("0.#") + "）"));
+        _ = Task.Run(() => RunJobAsync(snapshot, batch, inputs, models));
+        return Task.FromResult((true, "已提交 " + batch.Total.ToString() + " 条（输入 " + inputs.Count.ToString()
+            + " 个 × 音色 " + models.Count.ToString() + " 个 · F0 " + snapshot.F0Method
+            + " · 变调 " + snapshot.F0UpKey.ToString("0.#") + "）"));
     }
 
     /// <summary>停掉常驻引擎（把显存还回去；在跑的这一段作废）。</summary>
@@ -405,8 +533,16 @@ public sealed class RvcService
             if (_job.State == "submitted" || _job.State == "running")
             {
                 _job.State = "idle";
-                _job.Message = "已停引擎（这一段作废）";
+                _job.Message = "已停引擎（这一批作废）";
                 _job.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                foreach (RvcJobItem item in _job.Items)
+                {
+                    if (item.State == "pending" || item.State == "running")
+                    {
+                        item.State = "error";
+                        item.Message = "已停引擎";
+                    }
+                }
             }
         }
 
@@ -627,22 +763,19 @@ public sealed class RvcService
         _engine.Prepare(_config.PythonPath, _config.RepoDir, _config.ModelsRoot, _config.Device, _config.Half);
     }
 
-    /// <summary>后台跑一次变声，结束后更新任务状态。</summary>
+    /// <summary>后台跑一批变声（逐条投递），结束后更新批次状态。</summary>
     /// <param name="cfg">本次参数快照。</param>
+    /// <param name="batch">本批任务（面板读的就是它）。</param>
+    /// <param name="inputs">输入音频清单。</param>
+    /// <param name="models">音色清单。</param>
     /// <returns>无。</returns>
-    private async Task RunJobAsync(RvcConfig cfg)
+    private async Task RunJobAsync(RvcConfig cfg, RvcJobStatus batch, List<string> inputs, List<string> models)
     {
         lock (_gate)
         {
-            _job.State = "running";
-            _job.Message = "变声中…";
+            batch.State = "running";
+            batch.Message = "变声中…（0/" + batch.Items.Count.ToString() + "）";
         }
-
-        DateTime started = DateTime.Now;
-        string outName = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_"
-            + Path.GetFileNameWithoutExtension(cfg.InputPath) + "_"
-            + Path.GetFileNameWithoutExtension(cfg.Model) + ".wav";
-        string outPath = Path.Combine(_outDir, outName);
 
         try
         {
@@ -652,36 +785,84 @@ public sealed class RvcService
         {
             lock (_gate)
             {
-                _job.State = "error";
-                _job.Message = "产物目录不可写：" + ex.Message;
-                _job.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                batch.State = "error";
+                batch.Message = "产物目录不可写：" + ex.Message;
+                batch.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             }
 
             return;
         }
 
-        (bool ok, string file, double audioSeconds, string message) = await _engine.RunAsync(
-            cfg.InputPath,
-            cfg.Model,
-            cfg.Sid,
-            cfg.F0UpKey,
-            cfg.F0Method,
-            cfg.IndexRate,
-            cfg.FilterRadius,
-            cfg.ResampleSr,
-            cfg.RmsMixRate,
-            cfg.Protect,
-            outPath,
-            CancellationToken.None).ConfigureAwait(false);
+        int index = 0;
+        foreach (string input in inputs)
+        {
+            foreach (string model in models)
+            {
+                index = index + 1;
+                lock (_gate)
+                {
+                    batch.Items[index - 1].State = "running";
+                    batch.Items[index - 1].Message = "变声中…";
+                    batch.Message = "变声中…（" + index.ToString() + "/" + batch.Items.Count.ToString() + "）";
+                }
+
+                DateTime started = DateTime.Now;
+                string outPath = BuildOutPath(input, model);
+                (bool ok, string file, double audioSeconds, string message) = await _engine.RunAsync(
+                    input,
+                    model,
+                    cfg.Sid,
+                    cfg.F0UpKey,
+                    cfg.F0Method,
+                    cfg.IndexRate,
+                    cfg.FilterRadius,
+                    cfg.ResampleSr,
+                    cfg.RmsMixRate,
+                    cfg.Protect,
+                    outPath,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                double elapsed = Math.Round((DateTime.Now - started).TotalSeconds, 2);
+                lock (_gate)
+                {
+                    RvcJobItem item = batch.Items[index - 1];
+                    item.Message = message;
+                    item.AudioSeconds = audioSeconds;
+                    item.ElapsedSeconds = elapsed;
+                    batch.ElapsedSeconds = elapsed;
+                    if (ok)
+                    {
+                        item.State = "done";
+                        item.File = file;
+                        batch.Done = batch.Done + 1;
+                        batch.File = file;
+                        batch.AudioSeconds = audioSeconds;
+                    }
+                    else
+                    {
+                        item.State = "error";
+                        item.File = "";
+                        batch.Failed = batch.Failed + 1;
+                    }
+                }
+            }
+        }
 
         lock (_gate)
         {
-            _job.State = ok ? "done" : "error";
-            _job.Message = message;
-            _job.File = ok ? file : "";
-            _job.AudioSeconds = audioSeconds;
-            _job.ElapsedSeconds = Math.Round((DateTime.Now - started).TotalSeconds, 2);
-            _job.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            if (batch.Failed > 0)
+            {
+                batch.State = "error";
+                batch.Message = "共 " + batch.Total.ToString() + " 条：成功 " + batch.Done.ToString()
+                    + " · 失败 " + batch.Failed.ToString();
+            }
+            else
+            {
+                batch.State = "done";
+                batch.Message = "全部完成（" + batch.Done.ToString() + " 条）";
+            }
+
+            batch.FinishedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         }
     }
 
@@ -818,5 +999,769 @@ public sealed class RvcService
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             DefaultIgnoreCondition = JsonIgnoreCondition.Never,
         };
+    }
+    /// <summary>展开输入——给文件就一条，给目录取一层音频（按扩展名筛）。</summary>
+    /// <param name="path">输入文件或目录完整路径。</param>
+    /// <returns>输入音频完整路径清单（可能为空）。</returns>
+    private static List<string> ExpandInputs(string path)
+    {
+        var list = new List<string>();
+        if (File.Exists(path))
+        {
+            list.Add(path);
+            return list;
+        }
+
+        if (!Directory.Exists(path))
+        {
+            return list;
+        }
+
+        try
+        {
+            foreach (string file in Directory.GetFiles(path))
+            {
+                string ext = Path.GetExtension(file).ToLowerInvariant();
+                if (Array.IndexOf(AudioExtensions, ext) >= 0)
+                {
+                    list.Add(file);
+                }
+            }
+        }
+        catch (IOException)
+        {
+            return list;
+        }
+
+        list.Sort(StringComparer.OrdinalIgnoreCase);
+        return list;
+    }
+    /// <summary>展开音色——多选清单优先，空则用单值那个。</summary>
+    /// <param name="cfg">配置。</param>
+    /// <returns>音色模型文件名清单（可能为空）。</returns>
+    private static List<string> ExpandModels(RvcConfig cfg)
+    {
+        var list = new List<string>();
+        if (cfg.Models != null)
+        {
+            foreach (string name in cfg.Models)
+            {
+                if (!string.IsNullOrWhiteSpace(name) && list.IndexOf(name) < 0)
+                {
+                    list.Add(name);
+                }
+            }
+        }
+
+        if (list.Count == 0 && cfg.Model.Length > 0)
+        {
+            list.Add(cfg.Model);
+        }
+
+        return list;
+    }
+    /// <summary>产物落点——时间戳_输入名_音色名.wav，同秒撞名时补序号。</summary>
+    /// <param name="input">输入音频完整路径。</param>
+    /// <param name="model">音色模型文件名。</param>
+    /// <returns>产物完整路径。</returns>
+    private string BuildOutPath(string input, string model)
+    {
+        string stem = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_"
+            + Path.GetFileNameWithoutExtension(input) + "_"
+            + Path.GetFileNameWithoutExtension(model);
+        string path = Path.Combine(_outDir, stem + ".wav");
+        int n = 2;
+        while (File.Exists(path))
+        {
+            path = Path.Combine(_outDir, stem + "_" + n.ToString() + ".wav");
+            n = n + 1;
+        }
+
+        return path;
+    }
+
+    // ===== 实时段（v0.38 · 线 3）——以上离线段一律不动，本段只追加 =====
+
+    /// <summary>实时段状态锁（与离线段分开——实时侧起停 worker 会阻塞数秒）。</summary>
+    private readonly object _rtGate = new object();
+
+    /// <summary>实时配置落盘路径。</summary>
+    private string _rtConfigPath = "";
+
+    /// <summary>实时引擎（流式 worker；与离线常驻引擎分立的第二套进程）。</summary>
+    private readonly RvcRealtimeEngine _rtEngine = new RvcRealtimeEngine();
+
+    /// <summary>当前实时配置。</summary>
+    private RvcRealtimeConfig _rtConfig = new RvcRealtimeConfig();
+
+    /// <summary>worker 脚本源码（线 2 的 RvcRealtimeWorkerScript 经此注入；空 = 只认盘上脚本）。</summary>
+    private string _rtWorkerSource = "";
+
+    /// <summary>Voicemeeter 端点辅助（只做检测 / 运行态 / 一键拉起）。</summary>
+    private readonly VoicemeeterService _voicemeeter = new VoicemeeterService("");
+
+    /// <summary>实时链状态（面板显示这一路的死活与延迟）。</summary>
+    public RvcRealtimeState Realtime
+    {
+        get { return _rtEngine.State; }
+    }
+
+    /// <summary>离线链是否占着显卡（离线引擎在跑，或任务在途）——实时开流前查它。</summary>
+    public bool OfflineBusy
+    {
+        get
+        {
+            if (_engine.Alive)
+            {
+                return true;
+            }
+
+            lock (_gate)
+            {
+                bool running = _job.State == "submitted" || _job.State == "running";
+                return running;
+            }
+        }
+    }
+
+    /// <summary>注入 worker 脚本源码（线 2 落地后由 Program 调用一次；空 = 不注入）。</summary>
+    /// <param name="source">Python 源码。</param>
+    public void SetRealtimeWorkerSource(string source)
+    {
+        if (source == null)
+        {
+            _rtWorkerSource = "";
+            return;
+        }
+
+        _rtWorkerSource = source;
+    }
+
+    /// <summary>当前实时配置（拷贝，防外部改）。</summary>
+    /// <returns>配置副本。</returns>
+    public RvcRealtimeConfig RealtimeConfig()
+    {
+        lock (_rtGate)
+        {
+            return CloneRealtimeConfig(_rtConfig);
+        }
+    }
+
+    /// <summary>实时面板快照——环境 + 配置 + 状态 + 设备区间 + Voicemeeter + 互斥状态。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>快照对象（匿名结构，直接序列化给前端）。</returns>
+    public Task<object> RealtimeSnapshotAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        RvcRealtimeEnvSnapshot env = ProbeRealtime();
+        VoicemeeterStatus vm = _voicemeeter.Detect();
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        RvcRealtimeState state = _rtEngine.State;
+        bool busy = OfflineBusy;
+
+        object snapshot = new
+        {
+            env = new
+            {
+                pythonOk = env.PythonOk,
+                repoOk = env.RepoOk,
+                scriptOk = env.ScriptOk,
+                soundDeviceOk = env.SoundDeviceOk,
+                torchGateOk = env.TorchGateOk,
+                modelCount = env.ModelCount,
+                canStart = env.CanStart,
+                blockers = env.Blockers,
+                checkedAt = env.CheckedAt,
+            },
+            config = cfg,
+            state = state,
+            voicemeeter = vm,
+            offlineBusy = busy,
+            models = ListModels(),
+            scriptPath = _rtEngine.ScriptPath,
+            hotFields = RvcRealtimeProtocol.HotFields,
+        };
+
+        return Task.FromResult(snapshot);
+    }
+
+    /// <summary>
+    /// 开流（互斥守卫在前：离线引擎占着卡就明确阻塞，不静默抢卡）。
+    /// </summary>
+    /// <param name="next">新配置（null = 用当前配置）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 人话)。</returns>
+    public async Task<(bool Ok, string Message)> RealtimeStartAsync(
+        RvcRealtimeConfig next,
+        CancellationToken ct)
+    {
+        if (next != null)
+        {
+            SaveRealtimeConfig(next);
+        }
+
+        if (OfflineBusy)
+        {
+            return (false, "离线引擎正占着显卡——先停「离线」子签的引擎，再开实时（不自动杀进程）");
+        }
+
+        RvcRealtimeEnvSnapshot env = ProbeRealtime();
+        if (!env.CanStart)
+        {
+            if (env.Blockers.Count > 0)
+            {
+                return (false, env.Blockers[0]);
+            }
+
+            return (false, "前置条件不足");
+        }
+
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        if (cfg.Model.Length == 0)
+        {
+            return (false, "没选音色模型");
+        }
+
+        ApplyRealtimeEnginePaths();
+        return await _rtEngine.StartAsync(cfg, _rtWorkerSource, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>停流（worker 保留，下次开流不用重载模型）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 人话)。</returns>
+    public async Task<(bool Ok, string Message)> RealtimeStopAsync(CancellationToken ct)
+    {
+        return await _rtEngine.StopStreamAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 改实时配置：落盘后按字段分流——热更字段直接生效，其余提示重开流。
+    /// </summary>
+    /// <param name="next">新配置。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 人话, 生效字段, 是否需重开流)。</returns>
+    public async Task<(bool Ok, string Message, List<string> Applied, bool NeedRestart)> RealtimeUpdateAsync(
+        RvcRealtimeConfig next,
+        CancellationToken ct)
+    {
+        var none = new List<string>();
+        if (next == null)
+        {
+            return (false, "参数不完整", none, false);
+        }
+
+        RvcRealtimeConfig before = RealtimeConfig();
+        RvcRealtimeConfig saved = SaveRealtimeConfig(next);
+        bool needRestart = RealtimeNeedsRestart(before, saved);
+
+        RvcRealtimeState state = _rtEngine.State;
+        if (state.State != "running")
+        {
+            return (true, "配置已保存（实时流没在跑，下次开流生效）", none, false);
+        }
+
+        if (needRestart)
+        {
+            return (true, "配置已保存——设备 / 采样率 / F0 取法 / 音色 / 精度改了，需重开流才生效", none, true);
+        }
+
+        (bool ok, string message, List<string> applied) = await _rtEngine
+            .UpdateAsync(saved, ct).ConfigureAwait(false);
+        return (ok, message, applied, false);
+    }
+
+    /// <summary>枚举音频设备（设备类型 / 输入 / 输出下拉用；不加载模型、不开流）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, hostapi 清单, 人话)。</returns>
+    public async Task<(bool Ok, List<RvcHostApiItem> HostApis, string Message)> RealtimeDevicesAsync(
+        CancellationToken ct)
+    {
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        if (cfg.PythonPath.Length == 0 || !File.Exists(cfg.PythonPath))
+        {
+            return (false, new List<RvcHostApiItem>(), "解释器不在位：" + cfg.PythonPath);
+        }
+
+        ApplyRealtimeEnginePaths();
+        return await _rtEngine.DevicesAsync(_rtWorkerSource, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>自检——枚举设备后跑一段正弦进链，回延迟与每块耗时。</summary>
+    /// <param name="seconds">正弦秒数（默认 3）。</param>
+    /// <param name="outIndex">输出设备索引（hostapi 内编号）。</param>
+    /// <param name="sampleRate">设备采样率。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 状态快照, 人话)。</returns>
+    public async Task<(bool Ok, RvcRealtimeState Result, string Message)> RealtimeSelftestAsync(
+        int seconds,
+        int outIndex,
+        int sampleRate,
+        CancellationToken ct)
+    {
+        int length = 3;
+        if (seconds > 0)
+        {
+            length = seconds;
+        }
+
+        int sr = 48000;
+        if (sampleRate > 0)
+        {
+            sr = sampleRate;
+        }
+
+        ApplyRealtimeEnginePaths();
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        return await _rtEngine.SelftestAsync(length, outIndex, sr, cfg, _rtWorkerSource, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>关掉实时 worker 进程（自检 / 面板退出前还资源用；下一次开流会重起）。</summary>
+    public void RealtimeShutdown()
+    {
+        _rtEngine.Stop();
+    }
+
+    /// <summary>Voicemeeter 检测（安装 / 运行态 / 首选 exe）。</summary>
+    /// <returns>检测结果。</returns>
+    public VoicemeeterStatus VoicemeeterDetect()
+    {
+        return _voicemeeter.Detect();
+    }
+
+    /// <summary>一键拉起 Voicemeeter（独立进程，本软件退出不连带杀）。</summary>
+    /// <returns>(是否成功, 人话)。</returns>
+    public (bool Ok, string Message) VoicemeeterLaunch()
+    {
+        return _voicemeeter.Launch();
+    }
+
+    /// <summary>初始化实时段——读配置、从命令行默认值补路径、把路径推给实时引擎。</summary>
+    /// <param name="defaults">默认配置（路径来自命令行选项）。</param>
+    /// <param name="dataDir">数据目录（配置落点）。</param>
+    private void InitRealtime(RvcConfig defaults, string dataDir)
+    {
+        _rtConfigPath = Path.Combine(dataDir, "rvc-realtime-config.json");
+        _rtConfig = LoadRealtimeConfig();
+
+        if (_rtConfig.PythonPath.Length == 0)
+        {
+            _rtConfig.PythonPath = defaults.PythonPath;
+        }
+
+        if (_rtConfig.RepoDir.Length == 0)
+        {
+            _rtConfig.RepoDir = defaults.RepoDir;
+        }
+
+        if (_rtConfig.ModelsRoot.Length == 0)
+        {
+            _rtConfig.ModelsRoot = defaults.ModelsRoot;
+        }
+
+        if (_rtConfig.Device.Length == 0)
+        {
+            _rtConfig.Device = defaults.Device;
+        }
+
+        ApplyRealtimeEnginePaths();
+    }
+
+    /// <summary>把实时配置里的路径推给实时引擎（参数没变就什么都不做）。</summary>
+    private void ApplyRealtimeEnginePaths()
+    {
+        string python;
+        string repo;
+        string models;
+        string device;
+        bool half;
+        lock (_rtGate)
+        {
+            python = _rtConfig.PythonPath;
+            repo = _rtConfig.RepoDir;
+            models = _rtConfig.ModelsRoot;
+            device = _rtConfig.Device;
+            half = _rtConfig.Half;
+        }
+
+        _rtEngine.Prepare(python, repo, models, device, half);
+    }
+
+    /// <summary>实时环境探针（只看磁盘，不启动进程）。</summary>
+    /// <returns>环境实况。</returns>
+    private RvcRealtimeEnvSnapshot ProbeRealtime()
+    {
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        var blockers = new List<string>();
+
+        string python = cfg.PythonPath;
+        bool pythonOk = python.Length > 0 && File.Exists(python);
+        if (!pythonOk)
+        {
+            blockers.Add("解释器不在位：" + (python.Length > 0 ? python : "未配置"));
+        }
+
+        string sitePackages = "";
+        if (python.Length > 0)
+        {
+            string? embedRoot = Path.GetDirectoryName(python);
+            if (embedRoot != null)
+            {
+                sitePackages = Path.Combine(embedRoot, "Lib", "site-packages");
+            }
+        }
+
+        bool repoOk = cfg.RepoDir.Length > 0 && File.Exists(Path.Combine(cfg.RepoDir, "rvc_lite", "hubert.py"));
+        if (!repoOk)
+        {
+            blockers.Add("推理代码不完整（缺 rvc_lite\\hubert.py）：" + cfg.RepoDir);
+        }
+
+        string script = Path.Combine(AppContext.BaseDirectory, "data", "rvc", "rvc_realtime_worker.py");
+        bool scriptOk = File.Exists(script) || _rtWorkerSource.Length > 0;
+        if (!scriptOk)
+        {
+            blockers.Add("worker 脚本不在位：" + script + "（线 2 的 RvcRealtimeWorkerScript 尚未落地）");
+        }
+
+        bool soundDeviceOk = ModulePresent(sitePackages, "sounddevice");
+        if (!soundDeviceOk)
+        {
+            blockers.Add("Python 依赖缺：sounddevice（实时链前提，装进 " + sitePackages + "）");
+        }
+
+        string torchGate = cfg.RepoDir.Length > 0 ? Path.Combine(cfg.RepoDir, "torchgate.py") : "";
+        bool torchGateOk = torchGate.Length > 0 && File.Exists(torchGate);
+        if (!torchGateOk)
+        {
+            blockers.Add("降噪实现不在位：" + (torchGate.Length > 0 ? torchGate : "runtime\\rvc\\torchgate.py"));
+        }
+
+        int modelCount = CountFiles(Path.Combine(cfg.ModelsRoot, "weights"), "*.pth");
+        if (modelCount == 0)
+        {
+            blockers.Add("音色模型目录里没有 .pth：" + Path.Combine(cfg.ModelsRoot, "weights"));
+        }
+
+        return new RvcRealtimeEnvSnapshot
+        {
+            PythonOk = pythonOk,
+            RepoOk = repoOk,
+            ScriptOk = scriptOk,
+            SoundDeviceOk = soundDeviceOk,
+            TorchGateOk = torchGateOk,
+            ModelCount = modelCount,
+            CanStart = blockers.Count == 0,
+            Blockers = blockers,
+            CheckedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+        };
+    }
+
+    /// <summary>保存实时配置（归一化 + 落盘 + 推路径给引擎）。</summary>
+    /// <param name="next">新配置。</param>
+    /// <returns>落盘后的配置副本。</returns>
+    private RvcRealtimeConfig SaveRealtimeConfig(RvcRealtimeConfig next)
+    {
+        lock (_rtGate)
+        {
+            _rtConfig.HostApiIndex = next.HostApiIndex;
+            _rtConfig.Input = CloneDevice(next.Input);
+            _rtConfig.Output = CloneDevice(next.Output);
+            _rtConfig.Exclusive = next.Exclusive;
+
+            if (next.SampleRate <= 0)
+            {
+                _rtConfig.SampleRate = 0;
+            }
+            else
+            {
+                _rtConfig.SampleRate = Clamp(next.SampleRate, 8000, 192000);
+            }
+
+            if (next.Model != null)
+            {
+                _rtConfig.Model = next.Model;
+            }
+
+            _rtConfig.Sid = Clamp(next.Sid, 0, 200);
+            _rtConfig.F0UpKey = Clamp(next.F0UpKey, -24, 24);
+            _rtConfig.Formant = Clamp(next.Formant, -24, 24);
+            _rtConfig.IndexRate = Clamp(next.IndexRate, 0, 1);
+            _rtConfig.Threshold = Clamp(next.Threshold, -60, 0);
+            _rtConfig.RmsMixRate = Clamp(next.RmsMixRate, 0, 1);
+            _rtConfig.Protect = Clamp(next.Protect, 0, 0.5);
+            _rtConfig.F0Method = NormalizeF0(next.F0Method);
+            _rtConfig.BlockTime = Clamp(next.BlockTime, 0.05, 1);
+            _rtConfig.Crossfade = Clamp(next.Crossfade, 0.01, 0.2);
+            _rtConfig.ExtraTime = Clamp(next.ExtraTime, 0.5, 5);
+            _rtConfig.InputDenoise = next.InputDenoise;
+            _rtConfig.OutputDenoise = next.OutputDenoise;
+            _rtConfig.UsePv = next.UsePv;
+            _rtConfig.HarvestProcesses = Clamp(next.HarvestProcesses, 1, 8);
+            _rtConfig.Bypass = next.Bypass;
+
+            if (next.Device != null && next.Device.Length > 0)
+            {
+                _rtConfig.Device = next.Device;
+            }
+
+            _rtConfig.Half = next.Half;
+
+            if (next.PythonPath != null && next.PythonPath.Length > 0)
+            {
+                _rtConfig.PythonPath = next.PythonPath;
+            }
+
+            if (next.RepoDir != null && next.RepoDir.Length > 0)
+            {
+                _rtConfig.RepoDir = next.RepoDir;
+            }
+
+            if (next.ModelsRoot != null && next.ModelsRoot.Length > 0)
+            {
+                _rtConfig.ModelsRoot = next.ModelsRoot;
+            }
+        }
+
+        SaveRealtimeConfigFile();
+        ApplyRealtimeEnginePaths();
+        return RealtimeConfig();
+    }
+
+    /// <summary>哪些字段改了必须重开流（其余走热更）。</summary>
+    /// <param name="before">改前配置。</param>
+    /// <param name="after">改后配置。</param>
+    /// <returns>需要重开流返回 true。</returns>
+    private static bool RealtimeNeedsRestart(RvcRealtimeConfig before, RvcRealtimeConfig after)
+    {
+        if (before.HostApiIndex != after.HostApiIndex)
+        {
+            return true;
+        }
+
+        if (DeviceKey(before.Input) != DeviceKey(after.Input))
+        {
+            return true;
+        }
+
+        if (DeviceKey(before.Output) != DeviceKey(after.Output))
+        {
+            return true;
+        }
+
+        if (before.Exclusive != after.Exclusive)
+        {
+            return true;
+        }
+
+        if (before.SampleRate != after.SampleRate)
+        {
+            return true;
+        }
+
+        if (before.Model != after.Model)
+        {
+            return true;
+        }
+
+        if (before.Sid != after.Sid)
+        {
+            return true;
+        }
+
+        if (before.F0Method != after.F0Method)
+        {
+            return true;
+        }
+
+        if (before.Device != after.Device)
+        {
+            return true;
+        }
+
+        if (before.Half != after.Half)
+        {
+            return true;
+        }
+
+        if (before.UsePv != after.UsePv)
+        {
+            return true;
+        }
+
+        if (Math.Abs(before.BlockTime - after.BlockTime) > 0.0001)
+        {
+            return true;
+        }
+
+        if (Math.Abs(before.Crossfade - after.Crossfade) > 0.0001)
+        {
+            return true;
+        }
+
+        if (Math.Abs(before.ExtraTime - after.ExtraTime) > 0.0001)
+        {
+            return true;
+        }
+
+        if (before.HarvestProcesses != after.HarvestProcesses)
+        {
+            return true;
+        }
+
+        if (Math.Abs(before.RmsMixRate - after.RmsMixRate) > 0.0001)
+        {
+            return true;
+        }
+
+        if (Math.Abs(before.Protect - after.Protect) > 0.0001)
+        {
+            return true;
+        }
+
+        if (before.PythonPath != after.PythonPath)
+        {
+            return true;
+        }
+
+        if (before.RepoDir != after.RepoDir)
+        {
+            return true;
+        }
+
+        if (before.ModelsRoot != after.ModelsRoot)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>设备比较键（索引 + 名字双份——名字变但索引同也算变）。</summary>
+    /// <param name="device">设备引用。</param>
+    /// <returns>比较键。</returns>
+    private static string DeviceKey(RvcRealtimeDevice device)
+    {
+        if (device == null)
+        {
+            return "";
+        }
+
+        return device.Index.ToString() + "|" + (device.Name ?? "");
+    }
+
+    /// <summary>实时配置的深拷贝。</summary>
+    /// <param name="src">源配置。</param>
+    /// <returns>副本。</returns>
+    private static RvcRealtimeConfig CloneRealtimeConfig(RvcRealtimeConfig src)
+    {
+        var copy = new RvcRealtimeConfig
+        {
+            HostApiIndex = src.HostApiIndex,
+            Input = CloneDevice(src.Input),
+            Output = CloneDevice(src.Output),
+            Exclusive = src.Exclusive,
+            SampleRate = src.SampleRate,
+            Model = src.Model,
+            Sid = src.Sid,
+            F0UpKey = src.F0UpKey,
+            Formant = src.Formant,
+            IndexRate = src.IndexRate,
+            Threshold = src.Threshold,
+            RmsMixRate = src.RmsMixRate,
+            Protect = src.Protect,
+            F0Method = src.F0Method,
+            BlockTime = src.BlockTime,
+            Crossfade = src.Crossfade,
+            ExtraTime = src.ExtraTime,
+            InputDenoise = src.InputDenoise,
+            OutputDenoise = src.OutputDenoise,
+            UsePv = src.UsePv,
+            HarvestProcesses = src.HarvestProcesses,
+            Bypass = src.Bypass,
+            Device = src.Device,
+            Half = src.Half,
+            PythonPath = src.PythonPath,
+            RepoDir = src.RepoDir,
+            ModelsRoot = src.ModelsRoot,
+        };
+        return copy;
+    }
+
+    /// <summary>设备引用的深拷贝。</summary>
+    /// <param name="src">源设备。</param>
+    /// <returns>副本。</returns>
+    private static RvcRealtimeDevice CloneDevice(RvcRealtimeDevice src)
+    {
+        var copy = new RvcRealtimeDevice();
+        if (src == null)
+        {
+            return copy;
+        }
+
+        copy.Index = src.Index;
+        if (src.Name != null)
+        {
+            copy.Name = src.Name;
+        }
+
+        copy.Vaio = src.Vaio;
+        return copy;
+    }
+
+    /// <summary>读实时配置（没有或坏了给默认值）。</summary>
+    /// <returns>配置。</returns>
+    private RvcRealtimeConfig LoadRealtimeConfig()
+    {
+        try
+        {
+            if (!File.Exists(_rtConfigPath))
+            {
+                return new RvcRealtimeConfig();
+            }
+
+            string json = File.ReadAllText(_rtConfigPath);
+            RvcRealtimeConfig? loaded = JsonSerializer.Deserialize<RvcRealtimeConfig>(json, JsonOptions());
+            if (loaded == null)
+            {
+                return new RvcRealtimeConfig();
+            }
+
+            if (loaded.Input == null)
+            {
+                loaded.Input = new RvcRealtimeDevice();
+            }
+
+            if (loaded.Output == null)
+            {
+                loaded.Output = new RvcRealtimeDevice();
+            }
+
+            return loaded;
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            return new RvcRealtimeConfig();
+        }
+    }
+
+    /// <summary>写实时配置（失败具名出声，不静默）。</summary>
+    private void SaveRealtimeConfigFile()
+    {
+        try
+        {
+            string json;
+            lock (_rtGate)
+            {
+                json = JsonSerializer.Serialize(_rtConfig, JsonOptions());
+            }
+
+            File.WriteAllText(_rtConfigPath, json);
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine("写 rvc-realtime-config.json 失败：" + ex.Message);
+        }
     }
 }

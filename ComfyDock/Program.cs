@@ -95,6 +95,18 @@ public static class Program
                 options.RvcOutDir).ConfigureAwait(false);
         }
 
+        // [段0e] RVC 实时链自检 CLI（线 3）——枚举设备 → 3 秒正弦进链 → 打印延迟；不动麦克风
+        if (options.RvcRtSelfTest.Length > 0)
+        {
+            return await RvcCli.RunRealtimeAsync(
+                options.RvcRtSelfTest,
+                options.RvcPython,
+                options.RvcRepo,
+                options.RvcModels,
+                options.RvcModel,
+                options.RvcOutDir).ConfigureAwait(false);
+        }
+
         if (options.OmniSelfTest.Length > 0)
         {
             return await OmniCli.RunAsync(
@@ -185,6 +197,9 @@ public static class Program
             },
             options.DataDir,
             options.RvcOutDir);
+
+        // 实时链 worker 脚本（线 2 产出）——启动时注入源码，首次开流落到 data\rvc\rvc_realtime_worker.py
+        rvc.SetRealtimeWorkerSource(RvcRealtimeWorkerScript.Source);
 
         // [段3f] 本地生成（Qwen3-Omni 转写）——引擎是 llama.cpp 的 llama-mtmd-cli，模型住 ComfyUI\models\LLM
         var omni = new OmniService(
@@ -1220,6 +1235,83 @@ public static class Program
             }
         });
 
+        // 实时变声（线 3）——RVC 页签「实时」子签：设备 / 开流 / 停流 / 热更 / 自检 / Voicemeeter
+        app.MapGet("/api/rvc/realtime", async (CancellationToken ct) =>
+        {
+            return Results.Json(await rvc.RealtimeSnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/rvc/realtime/live", () =>
+        {
+            // 轻量轮询面——只回实时状态与互斥位，不重探磁盘
+            return Results.Json(new
+            {
+                state = rvc.Realtime,
+                offlineBusy = rvc.OfflineBusy,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/start", async (RvcRealtimeConfig? request, CancellationToken ct) =>
+        {
+            (bool ok, string message) = await rvc.RealtimeStartAsync(request, ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, state = rvc.Realtime }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/stop", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await rvc.RealtimeStopAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, state = rvc.Realtime }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/update", async (RvcRealtimeConfig? request, CancellationToken ct) =>
+        {
+            (bool ok, string message, List<string> applied, bool needRestart) = await rvc
+                .RealtimeUpdateAsync(request, ct).ConfigureAwait(false);
+            return Results.Json(new
+            {
+                ok,
+                message,
+                applied,
+                needRestart,
+                state = rvc.Realtime,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/devices", async (CancellationToken ct) =>
+        {
+            (bool ok, List<RvcHostApiItem> hostApis, string message) = await rvc
+                .RealtimeDevicesAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, hostApis, state = rvc.Realtime }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/selftest", async (RvcRealtimeSelftestRequest? request, CancellationToken ct) =>
+        {
+            int seconds = 3;
+            int outIndex = -1;
+            int sampleRate = 48000;
+            if (request != null)
+            {
+                seconds = request.Seconds;
+                outIndex = request.OutIndex;
+                sampleRate = request.SampleRate;
+            }
+
+            (bool ok, RvcRealtimeState result, string message) = await rvc
+                .RealtimeSelftestAsync(seconds, outIndex, sampleRate, ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, state = result }, JsonOptions);
+        });
+
+        app.MapGet("/api/rvc/realtime/voicemeeter", () =>
+        {
+            return Results.Json(new { ok = true, voicemeeter = rvc.VoicemeeterDetect() }, JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/voicemeeter/launch", () =>
+        {
+            (bool ok, string message) = rvc.VoicemeeterLaunch();
+            return Results.Json(new { ok, message, voicemeeter = rvc.VoicemeeterDetect() }, JsonOptions);
+        });
+
         // 本地生成（Qwen3-Omni 转写）——能力板块第三个页签里的第五个生成器：环境 / 提示词 / 转写 / 产物
         app.MapGet("/api/omni", async (CancellationToken ct) =>
         {
@@ -1512,3 +1604,9 @@ public sealed record TaggerDownloadRequest(string? Id, string? Kind);
 /// <summary>WD Tagger 打开目录请求体。</summary>
 /// <param name="Path">要打开的目录完整路径。</param>
 public sealed record TaggerOpenRequest(string? Path);
+
+/// <summary>实时变声自检请求体（正弦进链，不打麦克风、不落音频）。</summary>
+/// <param name="Seconds">正弦秒数（默认 3）。</param>
+/// <param name="OutIndex">输出设备索引（-1 = 系统默认）。</param>
+/// <param name="SampleRate">设备采样率（默认 48000）。</param>
+public sealed record RvcRealtimeSelftestRequest(int Seconds, int OutIndex, int SampleRate);

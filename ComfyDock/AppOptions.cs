@@ -84,6 +84,9 @@ public sealed class AppOptions
     /// <summary>RVC 自检 CLI——指定音色模型文件名（空 = weights 里第一个）。</summary>
     public string RvcModel { get; set; } = "";
 
+    /// <summary>RVC 实时自检 CLI——输出设备索引（整数；auto = 系统默认输出）；空 = 不起该分支。</summary>
+    public string RvcRtSelfTest { get; set; } = "";
+
     /// <summary>本地生成（Qwen3-Omni 转写）——引擎：llama.cpp 的 llama-mtmd-cli（自持，随 ComfyUI 一起放）。</summary>
     public string OmniCli { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\tools\llama-omni\bin\llama-mtmd-cli.exe";
 
@@ -225,6 +228,9 @@ public sealed class AppOptions
                     break;
                 case "--rvc-model":
                     options.RvcModel = RequireValue(args, ref i, key);
+                    break;
+                case "--rvc-rt-selftest":
+                    options.RvcRtSelfTest = RequireValue(args, ref i, key);
                     break;
                 case "--omni-cli":
                     options.OmniCli = RequireValue(args, ref i, key);
