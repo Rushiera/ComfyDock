@@ -257,6 +257,20 @@
 
     .moss-chk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink); }
 
+    /* RVC 实时：滑块行（标签 · 滑块 · 数值）——照原版实时 GUI 的拖拉手感 */
+    .rvc-slider { display: grid; grid-template-columns: 96px 1fr 64px; align-items: center; gap: 10px; }
+
+    .rvc-slider label { font-size: 12px; color: var(--dim); }
+
+    .rvc-slider input[type=range] { width: 100%; accent-color: var(--brand); }
+
+    .rvc-slider .val { font-size: 12px; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* 实时变声：开流后主按钮转红（同一颗按钮换文案与配色）· 模式按钮高亮 */
+    .btn-danger { border: 1px solid #c0392b; background: #c0392b; color: #fff; }
+
+    .btn-mini.on { border-color: var(--brand); color: var(--brand); background: #f3f8ff; }
+
     .moss-bar { height: 4px; background: #eef1f4; border-radius: 2px; overflow: hidden; margin-top: 4px; }
 
     .moss-bar i { display: block; height: 100%; background: var(--brand); }
@@ -709,11 +723,12 @@
 
         <div id="genPanelRvc" style="display:none">
           <div class="sub-tabs">
-            <button class="sub-tab on" data-rvc-view="gen">参数与变声</button>
+            <button class="sub-tab on" data-rvc-view="rt">实时变声</button>
+            <button class="sub-tab" data-rvc-view="gen">参数与变声</button>
             <button class="sub-tab" data-rvc-view="env">环境与模型</button>
           </div>
 
-          <div id="rvcViewGen">
+          <div id="rvcViewGen" style="display:none">
             <div class="rh-block">
               <h4>输入（一段音频，或一个目录——目录只取一层，不递归）</h4>
               <div class="moss-form">
@@ -723,10 +738,12 @@
                   <button class="btn-mini" id="rvcPickDir">选目录</button>
                 </div>
                 <div class="moss-line">
-                  <label title="音色模型 = 目标音色。模型住 ComfyUI 的 models\RVC\weights，配套检索索引放 models\RVC\indices">音色</label>
-                  <select id="rvcModel" class="wide"></select>
+                  <label title="音色模型 = 目标音色，可多选（勾几个就每个音色各出一条）。模型住 ComfyUI 的 models\RVC\weights，配套检索索引放 models\RVC\indices">音色（可多选）</label>
+                  <button class="btn-mini" id="rvcModelsAll">全选</button>
+                  <button class="btn-mini" id="rvcModelsNone">清空</button>
                   <span class="path" id="rvcModelLine">—</span>
                 </div>
+                <div class="rh-list" id="rvcModelsPick"></div>
                 <div class="moss-line">
                   <label title="F0 取法：rmvpe 最准（推荐）；pm 最快；harvest 最稳但慢；crepe 介于其间">F0 取法</label>
                   <select id="rvcF0Method">
@@ -792,8 +809,145 @@
             <div class="rh-block">
               <h4>出音（产物落 out\rvc，文件名 = 时间戳_输入_音色）</h4>
               <div class="rh-list" id="rvcJob"></div>
+              <div class="rh-list" id="rvcJobItems"></div>
               <div id="rvcAudios"></div>
               <div class="rh-list" id="rvcOutputs"></div>
+            </div>
+          </div>
+
+          <div id="rvcViewRt">
+            <div class="sub-head">
+              <button class="btn-primary" id="rvcRtToggle">开始实时</button>
+              <button class="btn-mini" id="rvcRtMode" title="点一下切换：变声 → 干声 → 提交（其他软件）">变声</button>
+              <span class="spacer"></span>
+              <span class="path" id="rvcRtJobLine">—</span>
+            </div>
+            <div class="sub-head">
+              <button class="btn-mini" id="rvcRtDevices">刷新设备</button>
+              <button class="btn-mini" id="rvcRtReload">重新检测</button>
+              <span class="spacer"></span>
+              <span class="path" id="rvcRtLine">检测中…</span>
+            </div>
+
+            <div class="rh-block">
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label title="音色模型（实时只用这一个）">音色</label>
+                  <select id="rvcRtModel" style="min-width:200px"></select>
+                </div>
+                <div class="moss-line">
+                  <label title="麦克风端点（输入端）">输入设备</label>
+                  <select id="rvcRtInput" style="flex:1;min-width:220px"></select>
+                  <label title="变声送去哪个端点：耳机 / 扬声器 = 自己听；提交模式会自动切到 Voicemeeter 的 Input">输出设备</label>
+                  <select id="rvcRtOutput" style="flex:1;min-width:220px"></select>
+                </div>
+                <div class="moss-line">
+                  <label title="设备采样率（0 = 跟随音色模型原生采样率）">采样率</label>
+                  <select id="rvcRtSampleRate">
+                    <option value="48000">48000</option>
+                    <option value="44100">44100</option>
+                    <option value="0">跟随模型</option>
+                  </select>
+                  <label class="moss-chk" title="WASAPI 独占：延迟更低，但独占期间别的软件拿不到该端点"><input type="checkbox" id="rvcRtExclusive"> WASAPI 独占</label>
+                  <label title="F0 取法（fcpe 不接）">F0</label>
+                  <select id="rvcRtF0Method">
+                    <option value="rmvpe">rmvpe</option>
+                    <option value="pm">pm</option>
+                    <option value="harvest">harvest</option>
+                    <option value="crepe">crepe</option>
+                  </select>
+                  <label title="推理设备（cuda / cpu）">推理</label>
+                  <select id="rvcRtDevice">
+                    <option value="cuda">cuda</option>
+                    <option value="cpu">cpu</option>
+                  </select>
+                  <label class="moss-chk" title="半精度推理"><input type="checkbox" id="rvcRtHalf"> 半精度</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>即时生效 <span class="rh-dim" style="font-weight:normal">（拖完立刻作用到在跑的流，不用点按钮）</span></h4>
+              <div class="moss-form">
+                <div class="rvc-slider">
+                  <label title="变调半音数（男→女约 +12；女→男约 -12）">变调</label>
+                  <input type="range" id="rvcRtF0UpKey" min="-24" max="24" step="1">
+                  <span class="val" id="rvcRtF0UpKeyVal">0</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="共振峰偏移：负 = 声线更细，正 = 更粗">formant</label>
+                  <input type="range" id="rvcRtFormant" min="-2" max="2" step="0.05">
+                  <span class="val" id="rvcRtFormantVal">0.00</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="检索混合比例（0 = 不挂索引；越高越贴训练音色、咬字略糊）">检索混合</label>
+                  <input type="range" id="rvcRtIndexRate" min="0" max="1" step="0.05">
+                  <span class="val" id="rvcRtIndexRateVal">0.75</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="响应阈值（dB）：低于它视为没在说话，调高更难触发">响应阈值</label>
+                  <input type="range" id="rvcRtThreshold" min="-60" max="0" step="1">
+                  <span class="val" id="rvcRtThresholdVal">-50</span>
+                </div>
+                <div class="moss-line">
+                  <label class="moss-chk" title="输入降噪（TorchGate，零新依赖）"><input type="checkbox" id="rvcRtInputNr"> 输入降噪</label>
+                  <label class="moss-chk" title="输出降噪（TorchGate）"><input type="checkbox" id="rvcRtOutputNr"> 输出降噪</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>改了要重开流 <span class="rh-dim" style="font-weight:normal">（拖完自动保存；流在跑就自动重开）</span></h4>
+              <div class="moss-form">
+                <div class="rvc-slider">
+                  <label title="响度混合：0 = 全用输出的响度（更平）；1 = 全跟输入起伏">响度混合</label>
+                  <input type="range" id="rvcRtRmsMixRate" min="0" max="1" step="0.05">
+                  <span class="val" id="rvcRtRmsMixRateVal">0.25</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="清辅音保护：越小越保护气声 / 齿音不被吃掉；0.5 = 关闭保护">保护</label>
+                  <input type="range" id="rvcRtProtect" min="0" max="0.5" step="0.01">
+                  <span class="val" id="rvcRtProtectVal">0.33</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="采样块时长：越小延迟越低、越吃显卡（8 G 卡 rmvpe 建议 ≥ 0.5）">块时长</label>
+                  <input type="range" id="rvcRtBlockTime" min="0.05" max="2" step="0.05">
+                  <span class="val" id="rvcRtBlockTimeVal">0.25</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="块间淡入淡出时长：消拼接爆音">淡入淡出</label>
+                  <input type="range" id="rvcRtCrossfade" min="0" max="0.5" step="0.01">
+                  <span class="val" id="rvcRtCrossfadeVal">0.05</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="额外推理时长：多给模型一点上下文，换更稳的音高，也是抗抖动缓冲">额外推理</label>
+                  <input type="range" id="rvcRtExtraTime" min="0" max="10" step="0.1">
+                  <span class="val" id="rvcRtExtraTimeVal">2.5</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="harvest 取法的进程数（只有 harvest 用得到）">harvest 进程</label>
+                  <input type="range" id="rvcRtHarvest" min="1" max="16" step="1">
+                  <span class="val" id="rvcRtHarvestVal">4</span>
+                </div>
+                <div class="moss-line">
+                  <label class="moss-chk" title="相位声码器（原版 use_pv 同口径）"><input type="checkbox" id="rvcRtUsePv"> 相位声码器</label>
+                  <span class="path" title="实测：8 G 卡 rmvpe 每块推理 324~711 ms，块 0.15 / 0.25 / 0.5 都超过块时长">8 G 卡：每块推理 324~711 ms，建议块时长 ≥ 0.5</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>状态（算法延迟分解 / 每块推理 / 电平）</h4>
+              <div class="rh-list" id="rvcRtState"></div>
+              <div id="rvcRtMeters"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>Voicemeeter（只当虚拟声卡端点用，不做混音台控制）</h4>
+              <div class="rh-list" id="rvcRtVm"></div>
+              <div class="moss-line">
+                <button class="btn-mini" id="rvcRtVmLaunch">拉起 Voicemeeter</button>
+              </div>
             </div>
           </div>
 
@@ -3049,13 +3203,16 @@
 
     function setRvcView(view) {
       const gen = document.getElementById("rvcViewGen");
+      const rt = document.getElementById("rvcViewRt");
       const env = document.getElementById("rvcViewEnv");
-      if (!gen || !env) { return; }
-      gen.style.display = view === "env" ? "none" : "block";
+      if (!gen || !rt || !env) { return; }
+      gen.style.display = view === "gen" ? "block" : "none";
+      rt.style.display = view === "rt" ? "block" : "none";
       env.style.display = view === "env" ? "block" : "none";
       for (const tab of document.querySelectorAll("#genPanelRvc .sub-tab")) {
         tab.classList.toggle("on", tab.dataset.rvcView === view);
       }
+      if (view === "rt") { loadRvcRt(); startRvcRtPoller(); }
     }
 
     function rvcCfg() {
@@ -3100,21 +3257,33 @@
     }
 
     function renderRvcModels() {
-      const box = document.getElementById("rvcModel");
+      const box = document.getElementById("rvcModelsPick");
       if (!box) { return; }
       const list = (rvcData && rvcData.models) || [];
-      const picked = rvcCfg().model || "";
+      const cfg = rvcCfg();
+      let picked = Array.isArray(cfg.models) ? cfg.models.slice() : [];
+      if (picked.length === 0 && cfg.model) { picked = [cfg.model]; }
       if (list.length === 0) {
-        box.innerHTML = '<option value="">（weights 目录里没有 .pth）</option>';
+        box.innerHTML = '<div class="rh-item"><span class="grow rh-dim">weights 目录里没有 .pth</span></div>';
         return;
       }
 
-      box.innerHTML = list.map(m =>
-        '<option value="' + rhText(m.name) + '"' + (m.name === picked ? " selected" : "") + ">"
-        + rhText(m.title) + "</option>"
-      ).join("");
+      box.innerHTML = list.map(m => {
+        const on = picked.indexOf(m.name) >= 0;
+        return '<label class="rh-item"><input type="checkbox" data-rvc-model="' + rhText(m.name) + '"'
+          + (on ? " checked" : "") + '> <span class="grow">' + rhText(m.title) + "</span>"
+          + '<span class="' + (m.index ? "rh-dim" : "rh-bad") + '">'
+          + (m.index ? "有索引" : "无索引") + "</span></label>";
+      }).join("");
+    }
 
-      if (!picked && list.length > 0) { box.value = list[0].name; }
+    // 当前勾选的音色清单（多选）
+    function rvcPickedModels() {
+      const list = [];
+      for (const el of document.querySelectorAll("#rvcModelsPick [data-rvc-model]")) {
+        if (el.checked) { list.push(el.getAttribute("data-rvc-model")); }
+      }
+      return list;
     }
 
     function renderRvc() {
@@ -3124,11 +3293,11 @@
       const job = rvcData.job || {};
       const cfg = rvcCfg();
 
-      const modelName = document.getElementById("rvcModel").value || cfg.model || "";
-      const entry = ((rvcData.models) || []).find(m => m.name === modelName);
-      document.getElementById("rvcModelLine").textContent = entry
-        ? (entry.index ? "索引：" + entry.index : "无配套索引（检索混合不生效）")
-        : "—";
+      const picked = rvcPickedModels();
+      const withIndex = picked.filter(name => ((rvcData.models) || []).some(m => m.name === name && m.index));
+      document.getElementById("rvcModelLine").textContent = picked.length === 0
+        ? "未选音色"
+        : ("已选 " + picked.length + " 个 · " + withIndex.length + " 个带索引");
 
       document.getElementById("rvcEnvLine").textContent = (env.canGenerate ? "可变声" : "前置条件不足")
         + " · 引擎 " + (engine.state || "stopped")
@@ -3178,6 +3347,22 @@
       document.getElementById("rvcJob").innerHTML = jobRows.join("");
       document.getElementById("rvcJobLine").textContent = (job.state || "idle") + " · " + (job.message || "—");
 
+      // 逐条清单（批量：一段输入 × 一个音色 = 一条；成功那条自带试听）
+      const items = job.items || [];
+      const itemRows = items.map((it, i) => {
+        const ok = it.state === "done";
+        const tail = ok ? (it.file + (it.elapsedSeconds ? " · " + it.elapsedSeconds + " 秒" : ""))
+          : (it.message || it.state);
+        return '<div class="rh-item"><span class="grow">' + (i + 1) + ". " + rhText(it.input)
+          + " × " + rhText(it.model) + "</span>"
+          + '<span class="' + (it.state === "error" ? "rh-bad" : "rh-dim") + '" title="' + rhText(tail) + '">'
+          + rhText(it.state) + "</span>"
+          + (ok ? '<audio controls preload="none" style="height:26px" src="/api/rvc/audio?name='
+            + encodeURIComponent(it.file) + '"></audio>' : "")
+          + "</div>";
+      });
+      document.getElementById("rvcJobItems").innerHTML = itemRows.join("");
+
       const audios = [];
       if (job.file && job.state === "done") {
         audios.push('<audio controls style="width:100%;margin:6px 0" src="/api/rvc/audio?name='
@@ -3197,8 +3382,10 @@
 
     function rvcCollect() {
       const cfg = rvcCfg();
+      const models = rvcPickedModels();
       return {
-        model: document.getElementById("rvcModel").value || "",
+        model: models.length > 0 ? models[0] : "",
+        models: models,
         inputPath: document.getElementById("rvcInput").value,
         sid: Math.round(mossNum("rvcSid", 0)),
         f0UpKey: mossNum("rvcF0UpKey", 0),
@@ -3262,6 +3449,418 @@
         } catch (e) { /* 轮询失败不打扰 */ }
       }, 2500);
     }
+
+    // ---- RVC 实时变声（线 3 后端）：设备 / 开流 / 热更 / 干声切换 / 延迟 ----
+    // 后端是流式 worker（sounddevice 全双工），状态靠 /api/rvc/realtime/live 轮询。
+    // 🔴 配置写面是整对象语义（SaveRealtimeConfig）——任何提交都必须带完整配置，只传局部会把其余字段清成默认值。
+    let rvcRtData = null;
+    let rvcRtTimer = null;
+    let rvcRtDevices = null;
+
+    function rvcRtCfg() {
+      return (rvcRtData && rvcRtData.config) || {};
+    }
+
+    async function loadRvcRt() {
+      try {
+        rvcRtData = await fetch("/api/rvc/realtime", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        rvcRtData = null;
+        document.getElementById("rvcRtLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      fillRvcRtForm();
+      renderRvcRt();
+      if (!rvcRtDevices) { await rvcRtLoadDevices(); }
+    }
+
+    function fillRvcRtForm() {
+      const cfg = rvcRtCfg();
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el) { el.value = value; }
+      };
+
+      set("rvcRtBlockTime", cfg.blockTime === undefined ? 0.25 : cfg.blockTime);
+      set("rvcRtCrossfade", cfg.crossfade === undefined ? 0.05 : cfg.crossfade);
+      set("rvcRtExtraTime", cfg.extraTime === undefined ? 2.5 : cfg.extraTime);
+      set("rvcRtHarvest", cfg.harvestProcesses === undefined ? 4 : cfg.harvestProcesses);
+      set("rvcRtF0UpKey", cfg.f0UpKey === undefined ? 0 : cfg.f0UpKey);
+      set("rvcRtFormant", cfg.formant === undefined ? 0 : cfg.formant);
+      set("rvcRtIndexRate", cfg.indexRate === undefined ? 0.75 : cfg.indexRate);
+      set("rvcRtThreshold", cfg.threshold === undefined ? -50 : cfg.threshold);
+      set("rvcRtRmsMixRate", cfg.rmsMixRate === undefined ? 0.25 : cfg.rmsMixRate);
+      set("rvcRtProtect", cfg.protect === undefined ? 0.33 : cfg.protect);
+      set("rvcRtSampleRate", String(cfg.sampleRate === undefined ? 48000 : cfg.sampleRate));
+      set("rvcRtF0Method", cfg.f0Method || "rmvpe");
+      set("rvcRtDevice", cfg.device || "cuda");
+      document.getElementById("rvcRtHalf").checked = cfg.half !== false;
+      document.getElementById("rvcRtExclusive").checked = cfg.exclusive === true;
+      document.getElementById("rvcRtInputNr").checked = cfg.inputDenoise === true;
+      document.getElementById("rvcRtOutputNr").checked = cfg.outputDenoise === true;
+      document.getElementById("rvcRtUsePv").checked = cfg.usePv === true;
+      renderRvcRtModels();
+      syncRvcRtRanges();
+    }
+
+    function renderRvcRtModels() {
+      const box = document.getElementById("rvcRtModel");
+      if (!box) { return; }
+      const list = (rvcRtData && rvcRtData.models) || [];
+      const picked = rvcRtCfg().model || "";
+      if (list.length === 0) {
+        box.innerHTML = '<option value="">（weights 目录里没有 .pth）</option>';
+        return;
+      }
+
+      box.innerHTML = list.map(m =>
+        '<option value="' + rhText(m.name) + '"' + (m.name === picked ? " selected" : "") + ">"
+        + rhText(m.title) + "</option>"
+      ).join("");
+      if (!picked && list.length > 0) { box.value = list[0].name; }
+    }
+
+    async function rvcRtLoadDevices() {
+      toast("枚举音频设备…");
+      const data = await rhPost("/api/rvc/realtime/devices", {});
+      if (!data || !data.ok) {
+        toast("设备枚举失败：" + ((data && data.message) || "未知"));
+        return;
+      }
+      rvcRtDevices = data.hostApis || [];
+      if (rvcRtData && data.state) { rvcRtData.state = data.state; }
+      renderRvcRtDevices();
+      renderRvcRt();
+    }
+
+    // 滑块数值回显——按 step 决定小数位（step ≥ 1 取整，0.1 保留一位，其余两位）
+    function syncRvcRtRanges() {
+      for (const el of document.querySelectorAll("#rvcViewRt input[type=range]")) {
+        const out = document.getElementById(el.id + "Val");
+        if (!out) { continue; }
+        const step = parseFloat(el.getAttribute("step") || "1");
+        const value = parseFloat(el.value);
+        if (isNaN(value)) { continue; }
+        out.textContent = step >= 1 ? String(Math.round(value)) : value.toFixed(step >= 0.1 ? 1 : 2);
+      }
+    }
+
+    // 全部 hostapi 的设备合并——设备栏一律列全（重名端点靠 [hostapi] 前缀分辨）
+    function rvcRtAllDevices() {
+      const all = [];
+      for (const h of (rvcRtDevices || [])) {
+        for (const d of (h.devices || [])) {
+          all.push({ index: d.index, name: d.name, in: d.in, out: d.out, vaio: d.vaio, default: d.default, hostName: h.name });
+        }
+      }
+      return all;
+    }
+
+    function renderRvcRtDevices() {
+      const inBox = document.getElementById("rvcRtInput");
+      const outBox = document.getElementById("rvcRtOutput");
+      if (!inBox || !outBox || !rvcRtDevices) { return; }
+      const cfg = rvcRtCfg();
+      const devices = rvcRtAllDevices();
+      const pickIn = cfg.input ? cfg.input.index : -1;
+      const pickOut = cfg.output ? cfg.output.index : -1;
+      const opts = (filter, picked) => devices.filter(filter).map(d =>
+        '<option value="' + d.index + '"' + (d.index === picked ? " selected" : "") + ">"
+        + rhText((d.hostName ? "[" + d.hostName + "] " : "") + d.name) + (d.vaio ? "（vaio）" : "") + "</option>"
+      ).join("");
+
+      inBox.innerHTML = '<option value="-1">（不选）</option>' + opts(d => d.in, pickIn);
+      outBox.innerHTML = '<option value="-1">（不选）</option>' + opts(d => d.out, pickOut);
+      inBox.value = String(pickIn);
+      outBox.value = String(pickOut);
+    }
+
+    // 实时三态：voice（变声）/ bypass（干声直通）/ submit（提交给其他软件——输出固定走 Voicemeeter 的 Input）
+    let rvcRtModeState = "";
+    // 进提交模式前的输出设备索引（切回变声 / 干声时还原；-1 = 没保存过）
+    let rvcRtPrevOutput = -1;
+
+    function rvcRtMode() {
+      if (rvcRtModeState) { return rvcRtModeState; }
+      const st = (rvcRtData && rvcRtData.state) || {};
+      const cfg = rvcRtCfg();
+      const bypass = st.state === "running" ? st.bypass === true : cfg.bypass === true;
+      if (bypass) { return "bypass"; }
+      const out = st.state === "running" ? st.output : cfg.output;
+      if (out && out.vaio) { return "submit"; }
+      return "voice";
+    }
+
+    // 提交模式送去的端点：Voicemeeter 的 Input（主通道）；找不到就取第一个 vaio 输出
+    function rvcRtSubmitDevice() {
+      const outs = rvcRtAllDevices().filter(d => d.out && d.vaio);
+      const main = outs.find(d => /voicemeeter input/i.test(d.name));
+      if (main) { return main; }
+      return outs.length > 0 ? outs[0] : null;
+    }
+
+    async function rvcRtSetMode(mode) {
+      const outBox = document.getElementById("rvcRtOutput");
+      if (mode === "submit") {
+        const dev = rvcRtSubmitDevice();
+        if (!dev) {
+          toast("没找到 Voicemeeter 端点——先装 Voicemeeter 或点「刷新设备」");
+          return;
+        }
+
+        // 记下进入提交前的输出设备（切回变声 / 干声时还原）
+        const cur = parseInt(outBox.value, 10);
+        const curDev = rvcRtAllDevices().find(x => x.index === cur);
+        if (curDev && !curDev.vaio) { rvcRtPrevOutput = cur; }
+        outBox.value = String(dev.index);
+        outBox.disabled = true;
+      } else {
+        outBox.disabled = false;
+        if (rvcRtPrevOutput >= 0) {
+          outBox.value = String(rvcRtPrevOutput);
+          rvcRtPrevOutput = -1;
+        }
+      }
+
+      rvcRtModeState = mode;
+      renderRvcRt();
+      const st = (rvcRtData && rvcRtData.state) || {};
+      if (st.state === "running" || st.state === "starting") {
+        await rvcRtPush({ bypass: mode === "bypass" }, true);
+      } else {
+        await rvcRtPush(null, true);
+      }
+    }
+
+    function rvcRtCollect() {
+      const cfg = rvcRtCfg();
+      const devices = rvcRtAllDevices();
+      const inIndex = parseInt(document.getElementById("rvcRtInput").value, 10);
+      const outIndex = parseInt(document.getElementById("rvcRtOutput").value, 10);
+      const devOf = (index, fallback) => {
+        const d = devices.find(x => x.index === index);
+        if (!d) { return fallback || { index: -1, name: "", vaio: false }; }
+        return { index: d.index, name: d.name, vaio: !!d.vaio };
+      };
+
+      return {
+        hostApiIndex: -1,
+        input: rvcRtDevices ? devOf(inIndex, cfg.input) : (cfg.input || { index: -1, name: "", vaio: false }),
+        output: rvcRtDevices ? devOf(outIndex, cfg.output) : (cfg.output || { index: -1, name: "", vaio: false }),
+        exclusive: document.getElementById("rvcRtExclusive").checked,
+        sampleRate: parseInt(document.getElementById("rvcRtSampleRate").value, 10) || 0,
+        model: document.getElementById("rvcRtModel").value || "",
+        sid: cfg.sid === undefined ? 0 : cfg.sid,
+        f0UpKey: mossNum("rvcRtF0UpKey", 0),
+        formant: mossNum("rvcRtFormant", 0),
+        indexRate: mossNum("rvcRtIndexRate", 0.75),
+        threshold: mossNum("rvcRtThreshold", -50),
+        rmsMixRate: mossNum("rvcRtRmsMixRate", 0.25),
+        protect: mossNum("rvcRtProtect", 0.33),
+        f0Method: document.getElementById("rvcRtF0Method").value,
+        blockTime: mossNum("rvcRtBlockTime", 0.25),
+        crossfade: mossNum("rvcRtCrossfade", 0.05),
+        extraTime: mossNum("rvcRtExtraTime", 2.5),
+        harvestProcesses: Math.round(mossNum("rvcRtHarvest", 4)),
+        inputDenoise: document.getElementById("rvcRtInputNr").checked,
+        outputDenoise: document.getElementById("rvcRtOutputNr").checked,
+        usePv: document.getElementById("rvcRtUsePv").checked,
+        bypass: rvcRtMode() === "bypass",
+        device: document.getElementById("rvcRtDevice").value || "cuda",
+        half: document.getElementById("rvcRtHalf").checked,
+        pythonPath: cfg.pythonPath || "",
+        repoDir: cfg.repoDir || "",
+        modelsRoot: cfg.modelsRoot || ""
+      };
+    }
+
+    // 推配置——整对象语义，body 由 rvcRtCollect 组全量（extra 只覆盖个别字段；silent 用于滑块自动推送）
+    async function rvcRtPush(extra, silent) {
+      const body = rvcRtCollect();
+      if (extra) {
+        for (const key of Object.keys(extra)) { body[key] = extra[key]; }
+      }
+
+      const data = await rhPost("/api/rvc/realtime/update", body);
+      if (!data) { return null; }
+      if (!silent) { toast((data.ok ? "✅ " : "❌ ") + (data.message || "")); }
+      if (rvcRtData && data.state) { rvcRtData.state = data.state; }
+      if (rvcRtData && data.needRestart) { rvcRtData.needRestart = true; }
+      renderRvcRt();
+      return data;
+    }
+
+    async function rvcRtStart() {
+      toast("开流中（加载模型，约 5~15 秒）…");
+      const data = await rhPost("/api/rvc/realtime/start", rvcRtCollect());
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      if (rvcRtData && data.state) { rvcRtData.state = data.state; }
+      renderRvcRt();
+      startRvcRtPoller();
+    }
+
+    async function rvcRtStop() {
+      const data = await rhPost("/api/rvc/realtime/stop", {});
+      toast((data && data.message) || "已停实时");
+      if (rvcRtData && data && data.state) { rvcRtData.state = data.state; }
+      renderRvcRt();
+    }
+
+    // 「改了要重开流」那一组：拖完自动保存；流在跑就自动停止 → 重新开始
+    async function rvcRtAutoRestart() {
+      const data = await rvcRtPush(null, true);
+      if (!data || !data.ok) { return; }
+      const st = (rvcRtData && rvcRtData.state) || {};
+      if (st.state !== "running" && st.state !== "starting") { return; }
+      toast("按新参数重开流…");
+      await rvcRtStop();
+      await new Promise(r => setTimeout(r, 600));
+      await rvcRtStart();
+    }
+
+    async function rvcRtVmLaunch() {
+      const data = await rhPost("/api/rvc/realtime/voicemeeter/launch", {});
+      toast((data && data.message) || "已请求拉起");
+      if (rvcRtData && data && data.voicemeeter) { rvcRtData.voicemeeter = data.voicemeeter; }
+      renderRvcRt();
+    }
+
+    function renderRvcRt() {
+      if (!rvcRtData) { return; }
+      const env = rvcRtData.env || {};
+      const state = rvcRtData.state || {};
+      const vm = rvcRtData.voicemeeter || {};
+      const busy = rvcRtData.offlineBusy === true;
+
+      document.getElementById("rvcRtLine").textContent = (env.canStart ? "可开流" : "前置条件不足")
+        + " · 实时 " + (state.state || "stopped")
+        + (busy ? " · ⚠ 离线引擎占着显卡" : "");
+      const modeText = rvcRtMode() === "submit" ? "提交（其他软件）"
+        : (rvcRtMode() === "bypass" ? "干声直通" : "变声");
+      document.getElementById("rvcRtJobLine").textContent = modeText
+        + (state.message ? " · " + state.message : "");
+
+      const row = (label, ok, text) =>
+        '<div class="rh-item"><span class="grow">' + rhText(label) + "</span>"
+        + '<span class="' + (ok ? "rh-dim" : "rh-bad") + '" title="' + rhText(text) + '">' + rhText(text) + "</span></div>";
+
+      const rows = [];
+      rows.push(row("解释器 / 推理代码", env.pythonOk && env.repoOk,
+        (env.pythonOk ? "解释器在" : "解释器缺") + " · " + (env.repoOk ? "代码在" : "代码缺")));
+      rows.push(row("worker 脚本", env.scriptOk, rvcRtData.scriptPath || "未落盘"));
+      rows.push(row("sounddevice（实时前提）", env.soundDeviceOk, env.soundDeviceOk ? "在位" : "缺——实时链跑不了"));
+      rows.push(row("TorchGate 降噪", env.torchGateOk, env.torchGateOk ? "在位" : "缺——降噪开关不生效"));
+      rows.push(row("音色模型", (env.modelCount || 0) > 0, (env.modelCount || 0) + " 个"));
+      for (const blocker of (env.blockers || [])) {
+        rows.push(row("缺", false, blocker));
+      }
+
+      if (busy) {
+        rows.push(row("互斥", false, "离线引擎在跑——先停「参数与变声」子签的引擎，再开实时"));
+      }
+
+      rows.push(row("状态", state.state === "running",
+        (state.state || "stopped") + (state.message ? " · " + state.message : "")));
+      if (state.state === "running") {
+        rows.push(row("算法延迟", true, state.latencyMs + " 毫秒（块 " + state.blockMs
+          + " + 淡入淡出 " + state.crossfadeMs + " + 额外 " + state.extraMs
+          + " + 设备 " + state.deviceMs + "）"));
+        rows.push(row("每块推理", true, state.inferMs + " 毫秒"
+          + (state.sampleRate ? " · " + state.sampleRate + " Hz" : "")));
+      }
+      if (state.worker) {
+        rows.push(row("worker", true, state.worker));
+      }
+      if (state.startedAt) {
+        rows.push(row("开流时刻", true, state.startedAt));
+      }
+      for (const line of (state.stderrTail || []).slice(-4)) {
+        const bad = /error|traceback|exception|错误|失败/i.test(line);
+        rows.push(row("worker 输出", !bad, line));
+      }
+      document.getElementById("rvcRtState").innerHTML = rows.join("");
+
+      // 开流后同一颗主按钮转红「停止实时」
+      const running = state.state === "running" || state.state === "starting";
+      const toggle = document.getElementById("rvcRtToggle");
+      toggle.textContent = running ? "停止实时" : "开始实时";
+      toggle.classList.toggle("btn-danger", running);
+      toggle.classList.toggle("btn-primary", !running);
+
+      // 模式循环按钮：变声 → 干声 → 提交（其他软件）——提交态下输出设备锁死
+      const mode = rvcRtMode();
+      const modeBtn = document.getElementById("rvcRtMode");
+      modeBtn.textContent = mode === "submit" ? "提交（其他软件）" : (mode === "bypass" ? "干声" : "变声");
+      modeBtn.classList.toggle("on", mode !== "voice");
+      document.getElementById("rvcRtOutput").disabled = mode === "submit";
+
+      const meters = [];
+      if (state.state === "running") {
+        const fmt = (v) => (typeof v === "number" ? v.toFixed(1) + " dB" : "—");
+        meters.push('<div class="rh-item"><span class="grow">输入电平</span><span class="rh-dim">'
+          + fmt(state.levelInDb) + "</span></div>");
+        meters.push('<div class="rh-item"><span class="grow">输出电平</span><span class="rh-dim">'
+          + fmt(state.levelOutDb) + "</span></div>");
+      }
+      document.getElementById("rvcRtMeters").innerHTML = meters.join("");
+
+      const vmRows = [];
+      const vmText = !vm.installed ? ("未安装（" + (vm.installDir || "") + "）")
+        : (vm.running ? ("在跑（" + (vm.processName || "") + "）") : ("已装未跑（" + (vm.exePath || "") + "）"));
+      vmRows.push(row("Voicemeeter", vm.installed && vm.running, vmText));
+      vmRows.push(row("用法", true, "输出设备选 VoiceMeeter Input 系列的 VAIO 端点，别的软件就能拿到变声"));
+      document.getElementById("rvcRtVm").innerHTML = vmRows.join("");
+    }
+
+    function startRvcRtPoller() {
+      if (rvcRtTimer) { return; }
+      rvcRtTimer = window.setInterval(async () => {
+        if (cap !== "moss" || genId !== "rvc") { return; }
+        const view = document.getElementById("rvcViewRt");
+        if (!view || view.style.display === "none") { return; }
+        const state = (rvcRtData && rvcRtData.state) || {};
+        if (state.state !== "starting" && state.state !== "running") { return; }
+
+        try {
+          const live = await fetch("/api/rvc/realtime/live", { cache: "no-store" }).then(r => r.json());
+          if (!rvcRtData) { rvcRtData = {}; }
+          rvcRtData.state = live.state;
+          rvcRtData.offlineBusy = live.offlineBusy;
+          renderRvcRt();
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 1000);
+    }
+
+    // 热更组：滑块松手就把值推给在跑的流（不重开流）；重开流组：松手自动保存并重开
+    const rvcRtHotIds = ["rvcRtF0UpKey", "rvcRtFormant", "rvcRtIndexRate", "rvcRtThreshold"];
+    const rvcRtRestartIds = ["rvcRtRmsMixRate", "rvcRtProtect", "rvcRtBlockTime", "rvcRtCrossfade",
+      "rvcRtExtraTime", "rvcRtHarvest"];
+    const rvcRtPushIfRunning = () => {
+      const st = (rvcRtData && rvcRtData.state) || {};
+      if (st.state === "running" || st.state === "starting") { rvcRtPush(null, true); }
+    };
+    for (const el of document.querySelectorAll("#rvcViewRt input[type=range]")) {
+      el.oninput = syncRvcRtRanges;
+      if (rvcRtHotIds.indexOf(el.id) >= 0) { el.onchange = rvcRtPushIfRunning; }
+      else if (rvcRtRestartIds.indexOf(el.id) >= 0) { el.onchange = rvcRtAutoRestart; }
+    }
+    for (const id of ["rvcRtInputNr", "rvcRtOutputNr"]) {
+      document.getElementById(id).onchange = rvcRtPushIfRunning;
+    }
+    document.getElementById("rvcRtUsePv").onchange = rvcRtAutoRestart;
+    document.getElementById("rvcRtDevices").onclick = rvcRtLoadDevices;
+    document.getElementById("rvcRtReload").onclick = loadRvcRt;
+    document.getElementById("rvcRtToggle").onclick = () => {
+      const st = (rvcRtData && rvcRtData.state) || {};
+      if (st.state === "running" || st.state === "starting") { return rvcRtStop(); }
+      return rvcRtStart();
+    };
+    document.getElementById("rvcRtMode").onclick = () => {
+      const mode = rvcRtMode();
+      rvcRtSetMode(mode === "voice" ? "bypass" : (mode === "bypass" ? "submit" : "voice"));
+    };
+    document.getElementById("rvcRtVmLaunch").onclick = rvcRtVmLaunch;
 
     // ---- 本地生成（Qwen3-Omni 转写）：输入音频 / 提示词 / 参数 / 产物 ----
     // 引擎是 llama.cpp 的 llama-mtmd-cli（每条重新加载模型），状态靠 /api/omni/live 轮询。
@@ -3568,13 +4167,23 @@
     for (const tab of document.querySelectorAll("#genPanelRvc .sub-tab")) {
       tab.onclick = () => setRvcView(tab.dataset.rvcView);
     }
+    // 默认停在「实时变声」子签（HTML 的 on 已标在 rt 上）——进面板就先拉一次实时快照
+    setRvcView(document.querySelector("#genPanelRvc .sub-tab.on").dataset.rvcView);
     document.getElementById("rvcReload").onclick = loadRvc;
     document.getElementById("rvcSave").onclick = () => rvcSave(false);
     document.getElementById("rvcSavePaths").onclick = () => rvcSave(false);
     document.getElementById("rvcGenerate").onclick = rvcGenerate;
     document.getElementById("rvcPickFile").onclick = () => rvcPick("audio");
     document.getElementById("rvcPickDir").onclick = () => rvcPick("dir");
-    document.getElementById("rvcModel").onchange = () => { renderRvc(); };
+    document.getElementById("rvcModelsPick").onchange = () => { renderRvc(); };
+    document.getElementById("rvcModelsAll").onclick = () => {
+      for (const el of document.querySelectorAll("#rvcModelsPick [data-rvc-model]")) { el.checked = true; }
+      renderRvc();
+    };
+    document.getElementById("rvcModelsNone").onclick = () => {
+      for (const el of document.querySelectorAll("#rvcModelsPick [data-rvc-model]")) { el.checked = false; }
+      renderRvc();
+    };
     document.getElementById("rvcStop").onclick = async () => {
       const data = await rhPost("/api/rvc/stop", {});
       toast((data && data.message) || "已停引擎");
