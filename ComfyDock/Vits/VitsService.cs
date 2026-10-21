@@ -8,6 +8,8 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
+using ComfyDock.Rvc;
+
 namespace ComfyDock.Vits;
 
 /// <summary>
@@ -128,6 +130,56 @@ public sealed class VitsJobItem
 
     /// <summary>完成时刻。</summary>
     public string At { get; set; } = "";
+
+    /// <summary>批量已完成条数（单条任务为 0）。</summary>
+    public int Progress { get; set; }
+
+    /// <summary>批量总条数（单条任务为 0）。</summary>
+    public int Total { get; set; }
+
+    /// <summary>批量已完成的条目（边跑边追加——面板按它逐条即时填格）。</summary>
+    public List<VitsBatchCell> Cells { get; set; } = new List<VitsBatchCell>();
+}
+
+/// <summary>批量合成的一格里那条产物（面板按它渲染矩阵）。</summary>
+public sealed class VitsBatchCell
+{
+    /// <summary>说话人索引。</summary>
+    public int Sid { get; set; }
+
+    /// <summary>说话人名字（模型名册里的原文）。</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>产物文件名（空 = 没出产物）。</summary>
+    public string File { get; set; } = "";
+
+    /// <summary>音频秒数。</summary>
+    public double Seconds { get; set; }
+
+    /// <summary>这条耗时毫秒。</summary>
+    public long Ms { get; set; }
+
+    /// <summary>失败原因（成功为空）。</summary>
+    public string Error { get; set; } = "";
+}
+
+/// <summary>一次批量合成 = 产物矩阵里的一列（同一条文本、同一批勾选的说话人）。</summary>
+public sealed class VitsBatchColumn
+{
+    /// <summary>批次 id（也是文件名时间戳前缀）。</summary>
+    public string Id { get; set; } = "";
+
+    /// <summary>跑的模型名。</summary>
+    public string Model { get; set; } = "";
+
+    /// <summary>这一批用的文本（矩阵的「发言内容」）。</summary>
+    public string Text { get; set; } = "";
+
+    /// <summary>批次完成时刻。</summary>
+    public string At { get; set; } = "";
+
+    /// <summary>逐条产物。</summary>
+    public List<VitsBatchCell> Cells { get; set; } = new List<VitsBatchCell>();
 }
 
 /// <summary>
@@ -191,6 +243,33 @@ public sealed class VitsService
                 Ms = _job.Ms,
                 Message = _job.Message,
                 At = _job.At,
+                Progress = _job.Progress,
+                Total = _job.Total,
+                Cells = new List<VitsBatchCell>(_job.Cells),
+            };
+        }
+    }
+    /// <summary>桥接用的 VITS 设置快照——模型 / 原说话人 / 目标说话人取自本页签当前配置（唯一真相源）。</summary>
+    /// <returns>设置快照（模型没选时 Model 为空，桥接侧不下发）。</returns>
+    public RvcVitsBridgeSpec BridgeSpec()
+    {
+        lock (_gate)
+        {
+            string script = _config.ScriptPath;
+            string repo = script.Length > 0 ? Path.GetDirectoryName(script) ?? "" : "";
+            if (repo.Length == 0)
+            {
+                repo = Path.Combine(AppContext.BaseDirectory, "runtime", "vits");
+            }
+
+            return new RvcVitsBridgeSpec
+            {
+                Model = _config.Model,
+                Src = _config.VcSrc,
+                Dst = _config.VcDst,
+                ModelsRoot = _config.ModelsRoot,
+                Repo = repo,
+                Device = _config.Device.Length == 0 ? "cuda" : _config.Device,
             };
         }
     }
@@ -409,6 +488,140 @@ public sealed class VitsService
         return (true, message + "（" + (ms / 1000.0).ToString("F1") + " 秒）");
     }
 
+    /// <summary>同一条文本批量跑勾选的说话人——一次请求、一次模型加载、一次文本前端。</summary>
+    /// <param name="sids">勾选的说话人索引（越界与重复在这里收口）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 说明, 本批结果——面板按它新增一列)。</returns>
+    public async Task<(bool Ok, string Message, VitsBatchColumn? Batch)> TtsBatchAsync(
+        IReadOnlyList<int> sids,
+        CancellationToken ct)
+    {
+        VitsConfig cfg;
+        lock (_gate)
+        {
+            cfg = CloneConfig(_config);
+        }
+
+        if (cfg.Model.Length == 0)
+        {
+            return (false, "还没选模型", null);
+        }
+
+        if (cfg.Text.Trim().Length == 0)
+        {
+            return (false, "文本为空——打开符号输入时要自己填音素串", null);
+        }
+
+        List<VitsSpeakerItem> roster = SpeakersOf(cfg.Model);
+        var picked = new List<int>();
+        foreach (int sid in sids)
+        {
+            if (sid < 0)
+            {
+                continue;
+            }
+
+            if (roster.Count > 0 && sid >= roster.Count)
+            {
+                continue;
+            }
+
+            if (!picked.Contains(sid))
+            {
+                picked.Add(sid);
+            }
+        }
+
+        if (picked.Count == 0)
+        {
+            return (false, "没有勾选任何说话人", null);
+        }
+
+        (bool loaded, string loadMessage) = await LoadAsync(cfg.Model, ct).ConfigureAwait(false);
+        if (!loaded)
+        {
+            return (false, loadMessage, null);
+        }
+
+        string batchId = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        Directory.CreateDirectory(_outDir);
+        var outs = new List<string>();
+        foreach (int sid in picked)
+        {
+            outs.Add(Path.Combine(_outDir, batchId + "_" + Sanitize(cfg.Model) + "_s" + sid + "_tts.wav"));
+        }
+
+        SetJob("tts-batch", "running", "", "批量合成中… 0/" + picked.Count, 0, 0, 0, 0, picked.Count);
+        long t0 = Environment.TickCount64;
+        (bool ok, string message, List<VitsBatchItem> items) = await _engine
+            .TtsBatchAsync(cfg.Text, picked, outs, cfg.LengthScale, cfg.NoiseScale, cfg.NoiseScaleW, cfg.Cleaned,
+                (item, done, total) =>
+                {
+                    // 每出一条就落进 job.Cells——/api/vits/live 轮询能立刻拿到，面板边跑边填格
+                    lock (_gate)
+                    {
+                        _job.Cells.Add(new VitsBatchCell
+                        {
+                            Sid = item.Sid,
+                            Name = item.Sid >= 0 && item.Sid < roster.Count ? roster[item.Sid].Name : ("spk" + item.Sid),
+                            File = item.Out.Length > 0 ? Path.GetFileName(item.Out) : "",
+                            Seconds = item.Seconds,
+                            Ms = item.Ms,
+                            Error = item.Error,
+                        });
+                        _job.Progress = done;
+                        _job.Total = total;
+                        _job.Message = "批量合成中… " + done + "/" + total;
+                    }
+                },
+                ct)
+            .ConfigureAwait(false);
+        long ms = Environment.TickCount64 - t0;
+
+        var column = new VitsBatchColumn
+        {
+            Id = batchId,
+            Model = cfg.Model,
+            Text = cfg.Text,
+            At = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+        };
+
+        foreach (VitsBatchItem item in items)
+        {
+            int sid = item.Sid;
+            column.Cells.Add(new VitsBatchCell
+            {
+                Sid = sid,
+                Name = sid >= 0 && sid < roster.Count ? roster[sid].Name : ("spk" + sid),
+                File = item.Out.Length > 0 ? Path.GetFileName(item.Out) : "",
+                Seconds = item.Seconds,
+                Ms = item.Ms,
+                Error = item.Error,
+            });
+        }
+
+        if (!ok)
+        {
+            SetJob("tts-batch", "error", "", message, 0, 0, ms, column.Cells.Count, picked.Count, column.Cells);
+            return (false, message, column);
+        }
+
+        int doneCount = 0;
+        double seconds = 0;
+        foreach (VitsBatchCell cell in column.Cells)
+        {
+            if (cell.Error.Length == 0)
+            {
+                doneCount++;
+                seconds += cell.Seconds;
+            }
+        }
+
+        string summary = "批次完成 " + doneCount + "/" + picked.Count + "（" + (ms / 1000.0).ToString("F1") + " 秒）";
+        SetJob("tts-batch", "done", "", summary, seconds, 0, ms, picked.Count, picked.Count, column.Cells);
+        return (true, summary, column);
+    }
+
     /// <summary>按当前配置做一次语音转换（原说话人 → 目标说话人）。</summary>
     /// <param name="ct">取消令牌。</param>
     /// <returns>(是否成功, 说明)。</returns>
@@ -560,7 +773,7 @@ public sealed class VitsService
         return list;
     }
 
-    /// <summary>某个模型的说话人清单（读 config 的 speakers 数组）。</summary>
+    /// <summary>某个模型的说话人清单——按 config 的 <c>data.n_speakers</c> 全量列（名册数组只覆盖有名字的那部分，其余回落 spk&lt;索引&gt;）。</summary>
     /// <param name="model">模型名。</param>
     /// <returns>说话人清单。</returns>
     public List<VitsSpeakerItem> SpeakersOf(string model)
@@ -577,16 +790,29 @@ public sealed class VitsService
             string text = File.ReadAllText(hit.Config, Encoding.UTF8);
             JsonNode? node = JsonNode.Parse(text);
             JsonArray? arr = node?["speakers"] as JsonArray;
-            if (arr is null)
+            int named = arr is null ? 0 : arr.Count;
+            int total = (int)((node?["data"] as JsonObject)?["n_speakers"]?.GetValue<double>() ?? 0);
+            int count = Math.Max(total, named);
+            for (int i = 0; i < count; i++)
             {
-                return list;
-            }
+                string name = "";
+                if (i < named)
+                {
+                    try
+                    {
+                        name = arr![i]?.GetValue<string>() ?? "";
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException || ex is FormatException)
+                    {
+                        name = "";
+                    }
+                }
 
-            int i = 0;
-            foreach (JsonNode? entry in arr)
-            {
-                list.Add(new VitsSpeakerItem { Index = i, Name = entry?.GetValue<string>() ?? ("spk" + i) });
-                i++;
+                list.Add(new VitsSpeakerItem
+                {
+                    Index = i,
+                    Name = name.Length > 0 ? name : ("spk" + i),
+                });
             }
         }
         catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
@@ -638,7 +864,8 @@ public sealed class VitsService
     /// <param name="tokens">token 数。</param>
     /// <param name="ms">耗时。</param>
     private void SetJob(string kind, string status, string file, string message,
-        double seconds = 0, int tokens = 0, long ms = 0)
+        double seconds = 0, int tokens = 0, long ms = 0, int progress = 0, int total = 0,
+        List<VitsBatchCell>? cells = null)
     {
         lock (_gate)
         {
@@ -653,6 +880,9 @@ public sealed class VitsService
                 Ms = ms,
                 Message = message,
                 At = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                Progress = progress,
+                Total = total,
+                Cells = cells is null ? new List<VitsBatchCell>() : new List<VitsBatchCell>(cells),
             };
         }
     }
@@ -790,4 +1020,11 @@ public sealed class VitsTextRequest
 {
     /// <summary>要清理的文本。</summary>
     public string? Text { get; set; }
+}
+
+/// <summary>面板发来的批量合成请求——勾了哪些说话人就跑哪些。</summary>
+public sealed class VitsBatchRequest
+{
+    /// <summary>勾选的说话人索引（空 = 不跑）。</summary>
+    public List<int>? Sids { get; set; }
 }

@@ -14,6 +14,9 @@
                                                     -> {"ok":true,"out":"...","seconds":..,"tokens":..}
     {"op":"vc","audio":"...","src":..,"dst":..,"out":"..."}
                                                     -> {"ok":true,"out":"...","seconds":..}
+    {"op":"tts_batch","text":..,"items":[{"sid":..,"out":".."}],"length_scale":..,"noise_scale":..,"noise_scale_w":..,"cleaned":false}
+                                                    -> 逐条 {"stage":"item","sid":..,"out":..,"seconds":..,"ms":..}
+                                                       收尾 {"stage":"done","total":..,"ok_count":..,"fail_count":..}
     {"op":"ping"} / {"op":"stop"}
 
 原始实现：MoeGoe（MIT，https://github.com/cjangcjengh/MoeGoe）——模型定义与日语文本前端按原样搬入
@@ -181,28 +184,76 @@ class Runner:
         return {"out": out, "seconds": round(seconds, 3), "tokens": len(seq),
                 "sampling_rate": cur["sr"], "sid": sid, "model": cur["name"]}
 
-    def vc(self, audio_path, src, dst, out):
+    def tts_batch(self, text, items, length_scale, noise_scale, noise_scale_w, cleaned, emit):
+        """同一条文本批量跑多个说话人——文本前端只算一次、模型只加载一次。
+
+        每条跑完立刻回一行（stage=item），全部跑完回 stage=done；单条失败不牵连其余。
+        """
+        cur = self._require()
+        seq = self._to_sequence(text, cleaned)
+        net = cur["net"]
+        sr = cur["sr"]
+        t_all = time.time()
+        ok_count = 0
+        fail_count = 0
+        for i, it in enumerate(items):
+            sid = int(it.get("sid", 0))
+            out = it.get("out") or os.path.join(HERE, "out.wav")
+            t0 = time.time()
+            try:
+                if sid < 0 or (cur["n_speakers"] > 0 and sid >= cur["n_speakers"]):
+                    raise RuntimeError("说话人索引越界：%s（n_speakers=%s）" % (sid, cur["n_speakers"]))
+                with no_grad():
+                    x = LongTensor(seq).unsqueeze(0).to(self.device)
+                    x_len = LongTensor([x.size(1)]).to(self.device)
+                    sid_t = LongTensor([sid]).to(self.device)
+                    audio = net.infer(x, x_len, sid=sid_t, noise_scale=noise_scale,
+                                      noise_scale_w=noise_scale_w, length_scale=length_scale)[0][0, 0]
+                    audio = audio.data.float().cpu().numpy()
+                seconds = write_wav(out, audio, sr)
+                ok_count += 1
+                emit({"ok": True, "stage": "item", "index": i, "sid": sid, "out": out,
+                      "seconds": round(seconds, 3), "tokens": len(seq),
+                      "ms": int((time.time() - t0) * 1000)})
+            except Exception as e:
+                fail_count += 1
+                log("批量第 %d 条失败（sid %s）：%s" % (i, sid, e))
+                emit({"ok": True, "stage": "item", "index": i, "sid": sid, "out": out,
+                      "error": str(e), "ms": int((time.time() - t0) * 1000)})
+        emit({"ok": True, "stage": "done", "total": len(items), "ok_count": ok_count,
+              "fail_count": fail_count, "ms": int((time.time() - t_all) * 1000)})
+
+    def vc_pcm(self, y_np, src, dst):
+        """对一段 PCM（已是模型采样率）做说话人转换，返回 numpy float32。
+
+        离线 vc 与 RVC 实时链的桥接（同一进程内 import 本模块）共用这一处数值口径——
+        桥接只换输入输出形态，不另写一套推理。
+        """
         cur = self._require()
         if cur["n_speakers"] <= 0:
             raise RuntimeError("该模型单说话人，无法做说话人转换：%s" % cur["name"])
         for label, sid in (("src", src), ("dst", dst)):
             if sid < 0 or sid >= cur["n_speakers"]:
                 raise RuntimeError("%s 说话人索引越界：%s（n_speakers=%s）" % (label, sid, cur["n_speakers"]))
-        if not os.path.isfile(audio_path):
-            raise RuntimeError("输入音频不存在：%s" % audio_path)
-        import librosa
-        y_np, _ = librosa.load(audio_path, sr=cur["sr"], mono=True)
         net = cur["net"]
         hps = cur["hps"]
         with no_grad():
-            y = torch.FloatTensor(y_np).unsqueeze(0).to(self.device)
+            y = torch.FloatTensor(np.asarray(y_np, dtype="float32")).unsqueeze(0).to(self.device)
             spec = spectrogram_torch(y, hps.data.filter_length, hps.data.sampling_rate,
                                      hps.data.hop_length, hps.data.win_length, center=False)
             spec_lengths = LongTensor([spec.size(-1)]).to(self.device)
             audio = net.voice_conversion(spec, spec_lengths,
                                          sid_src=LongTensor([src]).to(self.device),
                                          sid_tgt=LongTensor([dst]).to(self.device))[0][0, 0]
-            audio = audio.data.float().cpu().numpy()
+            return audio.data.float().cpu().numpy()
+
+    def vc(self, audio_path, src, dst, out):
+        cur = self._require()
+        if not os.path.isfile(audio_path):
+            raise RuntimeError("输入音频不存在：%s" % audio_path)
+        import librosa
+        y_np, _ = librosa.load(audio_path, sr=cur["sr"], mono=True)
+        audio = self.vc_pcm(y_np, src, dst)
         seconds = write_wav(out, audio, cur["sr"])
         return {"out": out, "seconds": round(seconds, 3), "src": src, "dst": dst,
                 "sampling_rate": cur["sr"], "model": cur["name"]}
@@ -303,6 +354,22 @@ def main():
         if (req.get("op") or "").strip().lower() == "stop":
             print(json.dumps({"ok": True, "stopped": True}, ensure_ascii=True), flush=True)
             break
+        if (req.get("op") or "").strip().lower() == "tts_batch":
+            # 批量：逐条回执（stage=item）+ 收尾回执（stage=done）——不走单回执通道
+            try:
+                runner.tts_batch(
+                    req.get("text") or "",
+                    req.get("items") or [],
+                    float(req.get("length_scale", 1.0)),
+                    float(req.get("noise_scale", 0.667)),
+                    float(req.get("noise_scale_w", 0.8)),
+                    bool(req.get("cleaned", False)),
+                    lambda obj: print(json.dumps(obj, ensure_ascii=True), flush=True))
+            except Exception as e:
+                resp = {"ok": False, "error": str(e), "trace": traceback.format_exc(limit=3)}
+                log(resp["trace"])
+                print(json.dumps(resp, ensure_ascii=True), flush=True)
+            continue
         try:
             resp = handle(runner, req)
         except Exception as e:

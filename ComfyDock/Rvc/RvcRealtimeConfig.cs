@@ -19,6 +19,31 @@ public sealed class RvcRealtimeDevice
 }
 
 /// <summary>
+/// 桥接用的 VITS 设置——单一真相源 = VITS 页签的当前配置（模型 / 原说话人 / 目标说话人），
+/// RVC 配置里不另存一份，改了那边由服务层推 update 到在跑的流。
+/// </summary>
+public sealed class RvcVitsBridgeSpec
+{
+    /// <summary>VITS 模型名（模型根下 &lt;分组&gt;\&lt;名字&gt;.pth）。</summary>
+    public string Model { get; set; } = "";
+
+    /// <summary>原说话人索引。</summary>
+    public int Src { get; set; }
+
+    /// <summary>目标说话人索引。</summary>
+    public int Dst { get; set; }
+
+    /// <summary>VITS 模型根（ComfyUI\models\VITS）。</summary>
+    public string ModelsRoot { get; set; } = "";
+
+    /// <summary>VITS 运行目录（runtime\vits——含 vits_worker.py 与 vits_lite）。</summary>
+    public string Repo { get; set; } = "";
+
+    /// <summary>推理设备（cuda / cpu）。</summary>
+    public string Device { get; set; } = "cuda";
+}
+
+/// <summary>
 /// 实时变声的持久化配置（落盘 <c>data\rvc-realtime-config.json</c>）。
 /// <para>字段分两组：热更字段（变调 / formant / 检索混合 / 阈值 / 降噪 / 干声开关）运行时直接改；其余（设备 / 采样率 / F0 取法 / 精度 / 音色）改动要重开流。</para>
 /// </summary>
@@ -89,6 +114,12 @@ public sealed class RvcRealtimeConfig
 
     /// <summary>干声直通（true = 麦克风原声直出，旁路推理；false = 走实时变声）。</summary>
     public bool Bypass { get; set; }
+
+    /// <summary>桥接 VITS 语音转换（true = RVC 输出再经一轮 VITS 说话人转换后才发声）。</summary>
+    public bool VcBridge { get; set; }
+
+    /// <summary>桥接攒块数（1 = 每块一次推理；N = 攒 N 块一次；热更不重开流）。</summary>
+    public int VcBridgeBlocks { get; set; } = 1;
 
     /// <summary>推理设备（cuda / cpu）。</summary>
     public string Device { get; set; } = "cuda";
@@ -213,6 +244,36 @@ public sealed class RvcRealtimeState
 
     /// <summary>干声直通（true = 旁路推理）。</summary>
     public bool Bypass { get; set; }
+
+    /// <summary>桥接 VITS 语音转换是否在跑。</summary>
+    public bool BridgeEnabled { get; set; }
+
+    /// <summary>桥接攒块数（1 = 每块一次推理）。</summary>
+    public int BridgeBlocks { get; set; }
+
+    /// <summary>桥接状态：loading（加载模型）/ ready / error。</summary>
+    public string BridgeState { get; set; } = "";
+
+    /// <summary>桥接状态说明（出错原因）。</summary>
+    public string BridgeMessage { get; set; } = "";
+
+    /// <summary>桥接用的 VITS 模型名。</summary>
+    public string BridgeModel { get; set; } = "";
+
+    /// <summary>桥接的原说话人索引。</summary>
+    public int BridgeSrc { get; set; }
+
+    /// <summary>桥接的目标说话人索引。</summary>
+    public int BridgeDst { get; set; }
+
+    /// <summary>桥接算法延迟（毫秒：攒块 + 播放队列 + 推理）。</summary>
+    public double BridgeMs { get; set; }
+
+    /// <summary>桥接每段推理耗时（毫秒）。</summary>
+    public double BridgeInferMs { get; set; }
+
+    /// <summary>桥接欠载次数（推理跟不上实时 → 输出静音的次数）。</summary>
+    public long BridgeUnderruns { get; set; }
     /// <summary>当前实际在跑的音色模型文件名（开流后才有；换音色重开流会跟着变）。</summary>
     public string Model { get; set; } = "";
 

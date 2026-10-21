@@ -53,6 +53,33 @@ public sealed class VitsEngineState
 }
 
 /// <summary>
+/// 批量合成里的一条结果——某个说话人的出声成败（单条失败不牵连整批）。
+/// </summary>
+public sealed class VitsBatchItem
+{
+    /// <summary>说话人索引。</summary>
+    public int Sid { get; set; }
+
+    /// <summary>产物完整路径（失败时也回传请求路径，便于对账）。</summary>
+    public string Out { get; set; } = "";
+
+    /// <summary>是否成功。</summary>
+    public bool Ok { get; set; }
+
+    /// <summary>音频秒数。</summary>
+    public double Seconds { get; set; }
+
+    /// <summary>喂进模型的 token 数。</summary>
+    public int Tokens { get; set; }
+
+    /// <summary>这条耗时毫秒。</summary>
+    public long Ms { get; set; }
+
+    /// <summary>失败原因（成功为空）。</summary>
+    public string Error { get; set; } = "";
+}
+
+/// <summary>
 /// VITS 常驻引擎——用本机 ComfyUI 的 python_embeded 跑 <c>runtime\vits\vits_worker.py</c>。
 /// 行协议：stdin 一行 JSON 请求 → stdout 一行 JSON 响应；stderr 只作诊断尾巴。
 /// </summary>
@@ -379,6 +406,98 @@ public sealed class VitsEngine : IDisposable
         return await RunAudioAsync(request, 600000, ct).ConfigureAwait(false);
     }
 
+    /// <summary>同一条文本批量跑多个说话人——一次请求、一次模型加载、一次文本前端。</summary>
+    /// <param name="text">文本（或音素串）。</param>
+    /// <param name="sids">说话人索引清单。</param>
+    /// <param name="outPaths">与 sids 一一对应的产物路径。</param>
+    /// <param name="lengthScale">语速（1 = 原速）。</param>
+    /// <param name="noiseScale">音色噪声。</param>
+    /// <param name="noiseScaleW">时长噪声。</param>
+    /// <param name="cleaned">文本已是音素串（符号输入）。</param>
+    /// <param name="onItem">每完成一条的回调（该条结果, 已完成, 总数）——空则不报进度。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 说明, 逐条结果)。</returns>
+    public async Task<(bool Ok, string Message, List<VitsBatchItem> Items)> TtsBatchAsync(
+        string text,
+        IReadOnlyList<int> sids,
+        IReadOnlyList<string> outPaths,
+        double lengthScale,
+        double noiseScale,
+        double noiseScaleW,
+        bool cleaned,
+        Action<VitsBatchItem, int, int>? onItem,
+        CancellationToken ct)
+    {
+        if (sids.Count == 0)
+        {
+            return (false, "没有勾选任何说话人", new List<VitsBatchItem>());
+        }
+
+        if (outPaths.Count != sids.Count)
+        {
+            return (false, "产物路径数与说话人数不一致", new List<VitsBatchItem>());
+        }
+
+        (bool Ok, string Message) started = await EnsureStartedAsync(ct).ConfigureAwait(false);
+        if (!started.Ok)
+        {
+            return (false, started.Message, new List<VitsBatchItem>());
+        }
+
+        lock (_gate)
+        {
+            if (_state.State == "busy")
+            {
+                return (false, "上一件还在跑", new List<VitsBatchItem>());
+            }
+
+            _state.State = "busy";
+            _state.Message = "批量合成中…";
+        }
+
+        var request = new JsonObject
+        {
+            ["op"] = "tts_batch",
+            ["text"] = text,
+            ["length_scale"] = lengthScale,
+            ["noise_scale"] = noiseScale,
+            ["noise_scale_w"] = noiseScaleW,
+            ["cleaned"] = cleaned,
+        };
+
+        var items = new JsonArray();
+        for (int i = 0; i < sids.Count; i++)
+        {
+            items.Add(new JsonObject
+            {
+                ["sid"] = sids[i],
+                ["out"] = outPaths[i],
+            });
+        }
+
+        request["items"] = items;
+
+        (List<VitsBatchItem> done, string error) = await ExchangeBatchAsync(request, 600000, sids.Count, onItem, ct)
+            .ConfigureAwait(false);
+        if (error.Length > 0)
+        {
+            SetState("error", error);
+            return (false, error, done);
+        }
+
+        SetState("ready", "引擎空闲");
+        int okCount = 0;
+        foreach (VitsBatchItem item in done)
+        {
+            if (item.Ok)
+            {
+                okCount++;
+            }
+        }
+
+        return (true, "批量出声 " + okCount + "/" + sids.Count, done);
+    }
+
     /// <summary>把一段音频换成目标说话人的音色。</summary>
     /// <param name="audioPath">输入音频。</param>
     /// <param name="src">原说话人索引。</param>
@@ -507,6 +626,93 @@ public sealed class VitsEngine : IDisposable
         }
 
         return (true, file, audioSeconds, tokens, "出声 " + audioSeconds.ToString("F1") + " 秒");
+    }
+
+    /// <summary>发一条批量请求，逐行收 item 回执直到 stage=done。</summary>
+    /// <param name="request">请求体。</param>
+    /// <param name="timeoutMs">每行等待超时毫秒（不是整批总时长）。</param>
+    /// <param name="total">总条数（报进度用）。</param>
+    /// <param name="onItem">每完成一条的回调。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(逐条结果, 错误说明)。</returns>
+    private async Task<(List<VitsBatchItem> Items, string Error)> ExchangeBatchAsync(
+        JsonObject request,
+        int timeoutMs,
+        int total,
+        Action<VitsBatchItem, int, int>? onItem,
+        CancellationToken ct)
+    {
+        var items = new List<VitsBatchItem>();
+        Process? proc = _proc;
+        if (proc is null)
+        {
+            return (items, "引擎进程不见了");
+        }
+
+        await _turn.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                await proc.StandardInput.WriteLineAsync(request.ToJsonString()).ConfigureAwait(false);
+                await proc.StandardInput.FlushAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
+            {
+                return (items, "写不进引擎：" + ex.Message);
+            }
+
+            while (true)
+            {
+                string? line = await ReadLineWithTimeoutAsync(proc, timeoutMs, ct).ConfigureAwait(false);
+                if (line is null)
+                {
+                    string tail = StderrTail();
+                    return (items, "引擎没有回执" + (tail.Length > 0 ? "\n" + tail : ""));
+                }
+
+                JsonNode? node = TryParse(line);
+                if (node is null)
+                {
+                    return (items, "回执不是合法 JSON：" + line);
+                }
+
+                if (!BoolOf(node, "ok"))
+                {
+                    string err = StringOf(node, "error");
+                    return (items, err.Length > 0 ? err : "引擎报错（无说明）");
+                }
+
+                string stage = StringOf(node, "stage");
+                if (stage == "item")
+                {
+                    var item = new VitsBatchItem
+                    {
+                        Sid = (int)DoubleOf(node, "sid"),
+                        Out = StringOf(node, "out"),
+                        Seconds = DoubleOf(node, "seconds"),
+                        Tokens = (int)DoubleOf(node, "tokens"),
+                        Ms = (long)DoubleOf(node, "ms"),
+                        Error = StringOf(node, "error"),
+                    };
+                    item.Ok = item.Error.Length == 0;
+                    items.Add(item);
+                    onItem?.Invoke(item, items.Count, total);
+                    continue;
+                }
+
+                if (stage == "done")
+                {
+                    return (items, "");
+                }
+
+                return (items, "批量回执形态意外：" + line);
+            }
+        }
+        finally
+        {
+            _turn.Release();
+        }
     }
 
     /// <summary>发一条请求、读一条回执。</summary>

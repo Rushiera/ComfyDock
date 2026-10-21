@@ -82,6 +82,17 @@ public sealed class RvcRealtimeEngine : IDisposable
                     LevelOutDb = _state.LevelOutDb,
                     Worker = _state.Worker,
                     Bypass = _state.Bypass,
+                    BridgeEnabled = _state.BridgeEnabled,
+                    BridgeBlocks = _state.BridgeBlocks,
+                    BridgeState = _state.BridgeState,
+                    BridgeMessage = _state.BridgeMessage,
+                    BridgeModel = _state.BridgeModel,
+                    BridgeSrc = _state.BridgeSrc,
+                    BridgeDst = _state.BridgeDst,
+                    BridgeMs = _state.BridgeMs,
+                    BridgeInferMs = _state.BridgeInferMs,
+                    BridgeUnderruns = _state.BridgeUnderruns,
+                    Model = _state.Model,
                     StartedAt = _state.StartedAt,
                     StderrTail = new List<string>(_state.StderrTail),
                 };
@@ -94,6 +105,8 @@ public sealed class RvcRealtimeEngine : IDisposable
     {
         get { return _scriptPath; }
     }
+    /// <summary>桥接用的 VITS 设置（服务层按 VITS 页签当前配置填；null / 空模型 = 桥接不可用）。</summary>
+    public RvcVitsBridgeSpec? BridgeSpec { get; set; }
 
     /// <summary>worker 进程是否还活着。</summary>
     public bool Alive
@@ -181,7 +194,7 @@ public sealed class RvcRealtimeEngine : IDisposable
 
         SetState("starting", "正在起流式 worker（首次要加载 HuBERT，约 3~15 秒）…");
 
-        JsonObject request = BuildStartRequest(config);
+        JsonObject request = BuildStartRequest(config, BridgeSpec);
         (bool ok, JsonNode? node, string message) = await RequestAsync(
             request,
             RvcRealtimeProtocol.EvStarted,
@@ -260,6 +273,12 @@ public sealed class RvcRealtimeEngine : IDisposable
             ["params"] = parameters,
         };
 
+        JsonObject? bridgeNode = BuildBridgeNode(config, BridgeSpec);
+        if (bridgeNode != null)
+        {
+            request["bridge"] = bridgeNode;
+        }
+
         (bool ok, JsonNode? node, string message) = await RequestAsync(
             request,
             RvcRealtimeProtocol.EvUpdated,
@@ -280,6 +299,8 @@ public sealed class RvcRealtimeEngine : IDisposable
                 applied.Add(pair.Key);
             }
         }
+
+        ApplyBridge(node?["bridge"]);
 
         lock (_gate)
         {
@@ -792,10 +813,11 @@ public sealed class RvcRealtimeEngine : IDisposable
         return true;
     }
 
-    /// <summary>按配置组 start 请求（嵌套 device + params，与 worker 侧口径一致）。</summary>
+    /// <summary>按配置组 start 请求（嵌套 device + params + bridge，与 worker 侧口径一致）。</summary>
     /// <param name="config">实时配置。</param>
+    /// <param name="bridge">桥接用的 VITS 设置（null = 不下发 bridge 节点）。</param>
     /// <returns>请求体。</returns>
-    private static JsonObject BuildStartRequest(RvcRealtimeConfig config)
+    private static JsonObject BuildStartRequest(RvcRealtimeConfig config, RvcVitsBridgeSpec? bridge)
     {
         int inputIndex = -1;
         if (config.Input != null)
@@ -844,7 +866,38 @@ public sealed class RvcRealtimeEngine : IDisposable
             ["device"] = device,
             ["params"] = parameters,
         };
+
+        JsonObject? bridgeNode = BuildBridgeNode(config, bridge);
+        if (bridgeNode != null)
+        {
+            request["bridge"] = bridgeNode;
+        }
+
         return request;
+    }
+    /// <summary>组桥接节点（VITS 设置 + RVC 侧开关 / 攒块数；模型为空时返回 null，worker 侧不建桥）。</summary>
+    /// <param name="config">实时配置。</param>
+    /// <param name="bridge">VITS 设置。</param>
+    /// <returns>bridge 节点或 null。</returns>
+    private static JsonObject? BuildBridgeNode(RvcRealtimeConfig config, RvcVitsBridgeSpec? bridge)
+    {
+        if (bridge == null)
+        {
+            return null;
+        }
+
+        var node = new JsonObject
+        {
+            ["enabled"] = config.VcBridge && bridge.Model.Length > 0,
+            ["blocks"] = Math.Clamp(config.VcBridgeBlocks, 1, 16),
+            ["model"] = bridge.Model,
+            ["src"] = bridge.Src,
+            ["dst"] = bridge.Dst,
+            ["modelsRoot"] = bridge.ModelsRoot,
+            ["repo"] = bridge.Repo,
+            ["device"] = bridge.Device,
+        };
+        return node;
     }
 
     /// <summary>把事件里的延迟分解写进状态（started / latency / selftest 三处共用）。</summary>
@@ -863,6 +916,7 @@ public sealed class RvcRealtimeEngine : IDisposable
         double device = DoubleOf(node, "deviceMs");
         double total = DoubleOf(node, "totalMs");
         double inferMs = DoubleOf(node, "inferMs");
+        double bridgeMs = DoubleOf(node, "bridgeMs");
 
         lock (_gate)
         {
@@ -899,6 +953,46 @@ public sealed class RvcRealtimeEngine : IDisposable
             {
                 _state.InferMs = infer;
             }
+        }
+
+        ApplyBridge(node["bridge"]);
+
+        if (bridgeMs > 0)
+        {
+            lock (_gate)
+            {
+                _state.BridgeMs = bridgeMs;
+            }
+        }
+    }
+    /// <summary>把事件里的桥接状态写进状态（started / latency / updated 三处共用）。</summary>
+    /// <param name="node">bridge 对象（null = 桥接没开，清掉标记）。</param>
+    private void ApplyBridge(JsonNode? node)
+    {
+        lock (_gate)
+        {
+            if (node is null)
+            {
+                _state.BridgeEnabled = false;
+                _state.BridgeState = "";
+                _state.BridgeMessage = "";
+                _state.BridgeMs = 0;
+                _state.BridgeInferMs = 0;
+                return;
+            }
+
+            _state.BridgeEnabled = BoolOf(node, "enabled");
+            _state.BridgeBlocks = (int)DoubleOf(node, "blocks");
+            _state.BridgeState = StringOf(node, "state");
+            _state.BridgeMessage = StringOf(node, "message");
+            _state.BridgeModel = StringOf(node, "model");
+            _state.BridgeSrc = (int)DoubleOf(node, "src");
+            _state.BridgeDst = (int)DoubleOf(node, "dst");
+            _state.BridgeInferMs = DoubleOf(node, "inferMs");
+            _state.BridgeUnderruns = (long)DoubleOf(node, "underruns");
+            _state.BridgeMs = DoubleOf(node, "queueMs")
+                + DoubleOf(node, "pendingBlocks") * _state.BlockMs
+                + _state.BridgeInferMs;
         }
     }
 
@@ -1088,6 +1182,7 @@ public sealed class RvcRealtimeEngine : IDisposable
                     }
 
                     ApplyLatency(node["latency"], 0);
+                    ApplyBridge(node["bridge"]);
                 }
 
                 if (ev == RvcRealtimeProtocol.EvStopped)

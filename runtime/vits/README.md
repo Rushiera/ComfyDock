@@ -44,10 +44,13 @@ python_embeded\python.exe runtime\vits\vits_worker.py ^
 | `load` | `model` | `sampling_rate` / `n_speakers` / `symbols` / `cleaners` / `speakers[]` / `device` |
 | `clean` | `text` | `cleaned`（清理后的音素串，供面板预览） |
 | `tts` | `text` `sid` `length_scale`(1.0) `noise_scale`(0.667) `noise_scale_w`(0.8) `cleaned`(false) `out` | `out` / `seconds` / `tokens` |
+| `tts_batch` | 与 `tts` 同参数，外加 `items[{sid, out}]` | 逐条 `{"stage":"item","sid","out","seconds","tokens","ms","error"}`，收尾 `{"stage":"done","total","ok_count","fail_count","ms"}` |
 | `vc` | `audio` `src` `dst` `out` | `out` / `seconds` |
 | `ping` / `stop` | — | 设备与当前模型 / 退出 |
 
 `cleaned=true` = 文本已是音素串（符号输入），跳过后端 cleaners——对应原版 `[CLEANED]` 标记。
+
+`tts_batch` 是面板「批量合成」走的通道：**同一条文本、一次模型加载、一次文本前端**，然后逐说话人前向并各落一个 wav；单条失败只回该条 `error`，不中断整批（回执是**多行**，C# 侧要读到 `stage=done` 才算收口）。
 
 ## 四、与原版的差异（三处，其余逐文件一致）
 
@@ -60,7 +63,8 @@ python_embeded\python.exe runtime\vits\vits_worker.py ^
 | 模型 | 加载 | TTS | VC |
 |:--|:--|:--|:--|
 | `346lab_v3`（85 spk 22.05k） | 1.54~1.94 s · 缺键 0 | 39 tokens → 1.92 s wav | sid 0→5 通过（1.916 s） |
-| `346lab_S1`（386 spk 22.05k） | 1.50 s · 缺键 0 | sid 100 → 1.58 s wav | — |
+| `346lab_S1`（**386 spk** 22.05k · `data.n_speakers=386`，`speakers[]` 只给 86 个名字，其余回落 `spk<索引>`） | 1.50 s · 缺键 0 | sid 0~385 | — |
+| `346lab_S1` 批量（86 个带名字的 · 同一条文本） | 复用已加载模型 | **13.2 s / 86 条产物**（一次 `tts_batch`，文本前端只算一次；面板实测；全量 86 人一次 19.4 s） | — |
 | `346star_for44100`（16 spk 44.1k） | 1.53 s · 缺键 0 | sid 3 → 2.22 s wav | — |
 
 产物落 `selftest_tts.wav` / `selftest_vc.wav`，均 16-bit PCM。

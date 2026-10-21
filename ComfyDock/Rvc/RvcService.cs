@@ -1102,6 +1102,9 @@ public sealed class RvcService
     /// <summary>worker 脚本源码（线 2 的 RvcRealtimeWorkerScript 经此注入；空 = 只认盘上脚本）。</summary>
     private string _rtWorkerSource = "";
 
+    /// <summary>桥接用的 VITS 设置来源（服务层在 Program 里接到 VitsService——单一真相源，RVC 配置不另存一份）。</summary>
+    private Func<RvcVitsBridgeSpec?>? _vitsBridgeSource;
+
     /// <summary>VB-CABLE 端点辅助（检测驱动 / 解内置包 / 提权安装——送声给其他软件用的虚拟声卡）。</summary>
     private readonly VbCableService _vbCable;
 
@@ -1154,6 +1157,52 @@ public sealed class RvcService
             return CloneRealtimeConfig(_rtConfig);
         }
     }
+    /// <summary>接上桥接用的 VITS 设置来源（Program 里指向 VitsService——VITS 页签是唯一真相源）。</summary>
+    /// <param name="source">返回当前 VITS 设置的回调（null = 桥接不可用）。</param>
+    public void SetVitsBridgeSource(Func<RvcVitsBridgeSpec?> source)
+    {
+        _vitsBridgeSource = source;
+    }
+    /// <summary>当前桥接设置（VITS 页签的模型 / 说话人 + 这一路要用的运行目录）。</summary>
+    /// <returns>设置快照（来源没接上时返回空设置）。</returns>
+    public RvcVitsBridgeSpec BridgeSpec()
+    {
+        Func<RvcVitsBridgeSpec?>? source = _vitsBridgeSource;
+        if (source == null)
+        {
+            return new RvcVitsBridgeSpec();
+        }
+
+        RvcVitsBridgeSpec? spec = source();
+        if (spec == null)
+        {
+            return new RvcVitsBridgeSpec();
+        }
+
+        return spec;
+    }
+    /// <summary>VITS 设置变了——桥接开着且流在跑时把新设置推给 worker（换模型由 worker 下一段重载）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 人话)。</returns>
+    public async Task<(bool Ok, string Message)> RealtimeRefreshBridgeAsync(CancellationToken ct)
+    {
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        if (!cfg.VcBridge)
+        {
+            return (true, "桥接没开——设置已存，下次打开生效");
+        }
+
+        RvcRealtimeState state = _rtEngine.State;
+        if (state.State != "running" && state.State != "starting")
+        {
+            return (true, "实时流没在跑——设置已存，下次开流生效");
+        }
+
+        _rtEngine.BridgeSpec = BridgeSpec();
+        (bool ok, string message, List<string> applied) = await _rtEngine
+            .UpdateAsync(cfg, ct).ConfigureAwait(false);
+        return (ok, message);
+    }
 
     /// <summary>实时面板快照——环境 + 配置 + 状态 + 设备区间 + 送声驱动（VB-CABLE）+ 互斥状态。</summary>
     /// <param name="ct">取消令牌。</param>
@@ -1188,6 +1237,7 @@ public sealed class RvcService
             offlineBusy = busy,
             models = ListModels(),
             scriptPath = _rtEngine.ScriptPath,
+            bridge = BridgeSpec(),
             hotFields = RvcRealtimeProtocol.HotFields,
         };
 
@@ -1249,6 +1299,13 @@ public sealed class RvcService
         }
 
         ApplyRealtimeEnginePaths();
+        RvcVitsBridgeSpec spec = BridgeSpec();
+        if (cfg.VcBridge && spec.Model.Length == 0)
+        {
+            return (false, "桥接 VITS-VC 已打开，但 VITS 页签还没选模型——先去「本地生成 → VITS」选一个再开流");
+        }
+
+        _rtEngine.BridgeSpec = spec;
         return await _rtEngine.StartAsync(cfg, _rtWorkerSource, ct).ConfigureAwait(false);
     }
 
@@ -1350,6 +1407,13 @@ public sealed class RvcService
             }
 
             return (true, "已按新参数自动重开流——" + restartMessage, none, true);
+        }
+
+        _rtEngine.BridgeSpec = BridgeSpec();
+        RvcVitsBridgeSpec bridgeNow = _rtEngine.BridgeSpec;
+        if (saved.VcBridge && bridgeNow != null && bridgeNow.Model.Length == 0)
+        {
+            return (false, "桥接 VITS-VC 已保存，但 VITS 页签还没选模型——先去「本地生成 → VITS」选一个", none, false);
         }
 
         (bool ok, string message, List<string> applied) = await _rtEngine
@@ -1593,6 +1657,8 @@ public sealed class RvcService
             _rtConfig.UsePv = next.UsePv;
             _rtConfig.HarvestProcesses = Clamp(next.HarvestProcesses, 1, 8);
             _rtConfig.Bypass = next.Bypass;
+            _rtConfig.VcBridge = next.VcBridge;
+            _rtConfig.VcBridgeBlocks = Clamp(next.VcBridgeBlocks <= 0 ? 1 : next.VcBridgeBlocks, 1, 16);
 
             if (next.Device != null && next.Device.Length > 0)
             {
@@ -1773,6 +1839,8 @@ public sealed class RvcService
             UsePv = src.UsePv,
             HarvestProcesses = src.HarvestProcesses,
             Bypass = src.Bypass,
+            VcBridge = src.VcBridge,
+            VcBridgeBlocks = src.VcBridgeBlocks,
             Device = src.Device,
             Half = src.Half,
             PythonPath = src.PythonPath,

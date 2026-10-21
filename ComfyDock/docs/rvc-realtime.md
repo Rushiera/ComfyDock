@@ -83,6 +83,20 @@
 
 **没开流时改参数也落盘**——热更组控件（含降噪勾选）松手即推一次 `update`，回执「配置已保存，下次开流生效」，滑块值不会在切页签后丢掉。流处在 `starting`（正在加载模型）时改动，同样按新配置再重开一次——请求在服务面串行排队，不会互相覆盖。
 
+### 4.4 桥接 VITS-VC（v0.44）
+
+RVC 变声结果先过一轮 VITS 说话人转换再送输出设备。
+
+| 控件 | 键 | 生效 | 说明 |
+|:--|:--|:--|:--|
+| 桥接 VITS-VC（勾选） | `vcBridge` | 热更 | 打开后每 `N` 块过一次 VITS；关掉即回单轮变声 |
+| 逐块数量（滑杆 1–8） | `vcBridgeBlocks` | 热更 | `N` = 攒 `N × block_time` 秒做一次推理；`1` 延迟最低、`4` 以上更稳（欠载更少但延迟更高） |
+| 模型 / 原说话人 / 目标说话人 / 推理设备 | — | **来自 VITS 页签** | 不存第二份；VITS 页签保存（含源 / 目标说话人与设备下拉改动）即推 `update` 到在跑的流 |
+
+- 采样率：RVC 输出（设备采样率）→ 降到 VITS 模型采样率（22.05k / 44.1k）→ VC → 升回设备采样率；两段都按段长对齐，防逐段漂移。
+- 状态块三行：`桥接 VITS-VC`（`ready` / `loading` / `error` + 模型 + 攒几块 + 推理毫秒）· `桥接延迟`（攒块 + 播放队列 + 推理）· `桥接欠载`（推理跟不上 → 输出静音的次数；调大逐块数量或块时长）。
+- 数值口径与离线 VC 同一处：`runtime\vits\vits_worker.py` 的 `Runner.vc_pcm`。
+
 ---
 
 ## 5. 延迟实测（8 G 卡 · RTX 4060 Laptop · rmvpe · 半精度 · 48 kHz）
@@ -116,6 +130,8 @@
 | VB-CABLE 显示未装 | 到「环境与模型」子签的「送声驱动（VB-CABLE）」块点安装（内置包在 `runtime\vbcable`，不需要联网）；装完**重启电脑**，再回实时子签点「刷新设备」 |
 | 切到提交但别的软件没声 | 别的软件里选「CABLE Output」当麦克风；面板输出栏是否锁在 CABLE Input（状态块末行「送声端点」会点明）；提交模式下变声必须是真的变声（干声不会送出去） |
 | 端点显示「不在位」 | 配置里存的端点已消失（卸载了旧虚拟声卡 / 换了设备）——点「刷新设备」重选一个再开流；开流也会按名字校验并拒绝 |
+| 桥接没声 / 桥接红字 | 状态块「桥接 VITS-VC」行看状态：`loading` = 正在加载 VITS 模型（约 2 秒，出声为静音）；`error` = 看下一行原因（多半是 VITS 页签没选模型 / 模型缺 `.json`）；「VITS 页签还没选模型」时开流会被直接拒绝 |
+| 桥接声音断续 | 「桥接欠载」计数在涨 = 推理跟不上——调大「逐块数量」（1→2→4）或块时长；8 G 卡同时跑 RVC + VITS 两份模型时更容易欠载 |
 
 ---
 
@@ -132,6 +148,8 @@
 | 换送声驱动 / 加别的虚拟声卡 | `VbCableService.IsCable`（端点名判定）+ `runtime\vbcable` 里的安装包 + 面板 `rvcRtCableInput` / `rvcRtSetMode`（提交态锁输出栏）/ 状态块「设备校验」——四处同源 |
 | 加设备筛选 / 默认设备 | `renderRvcRtHostApis` / `renderRvcRtDevices` / `rvcRtCollect`（三处同源：渲染与收集必须一致；端点按**名字**匹配，不按索引） |
 | 二期：双输出（干声走 A、变声走 B） | worker 加第二路 `OutputStream` + `outputs: [a, b]` 参数 → 引擎透传 → 面板两路选择 |
+| 改桥接（攒块策略 / 延迟 / 采样率） | worker `VitsBridge`（`RvcRealtimeWorkerScript.cs` 段6b）——`push` 攒块、`_loop` 推理与重采样、`poll` 播放队列；协议侧只动 `bridge` 节点（`RvcRealtimeEngine.BuildBridgeNode`）+ 面板 `rvcRtVcBridge` / `rvcRtVcBlocks` |
+| 桥接换音色口径 | `runtime\vits\vits_worker.py` `Runner.vc_pcm`（离线 VC 与桥接同源）；改后跑 `--vits-selftest` 与 worker `--selftest --vits-model <模型> --bridge-blocks N` |
 | 二期：预设保存 / 切换 | 端点 `GET/POST /api/rvc/realtime/presets` + 配置落盘；面板加下拉 |
 
 ---

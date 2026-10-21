@@ -258,6 +258,9 @@ public static class Program
             options.DataDir,
             options.VitsOutDir);
 
+        // 桥接 VITS-VC：RVC 实时链的模型 / 说话人取自 VITS 页签（单一真相源——不另存一份）
+        rvc.SetVitsBridgeSource(() => vits.BridgeSpec());
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:" + options.Port);
@@ -1198,7 +1201,7 @@ public static class Program
             }, JsonOptions);
         });
 
-        app.MapPost("/api/vits/config", (VitsConfig request) =>
+        app.MapPost("/api/vits/config", async (VitsConfig request, CancellationToken ct) =>
         {
             if (request is null)
             {
@@ -1206,13 +1209,27 @@ public static class Program
             }
 
             VitsConfig saved = vits.UpdateConfig(request);
-            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+            (bool bridgeOk, string bridgeMessage) = await rvc
+                .RealtimeRefreshBridgeAsync(ct).ConfigureAwait(false);
+            return Results.Json(new
+            {
+                ok = true,
+                config = saved,
+                bridge = new { ok = bridgeOk, message = bridgeMessage },
+            }, JsonOptions);
         });
 
         app.MapPost("/api/vits/load", async (string? model, CancellationToken ct) =>
         {
             (bool ok, string message) = await vits.LoadAsync(model ?? "", ct).ConfigureAwait(false);
-            return Results.Json(new { ok, message, engine = vits.Engine }, JsonOptions);
+            string bridgeMessage = "";
+            if (ok)
+            {
+                (bool _, string note) = await rvc.RealtimeRefreshBridgeAsync(ct).ConfigureAwait(false);
+                bridgeMessage = note;
+            }
+
+            return Results.Json(new { ok, message, bridgeMessage, engine = vits.Engine }, JsonOptions);
         });
 
         app.MapPost("/api/vits/clean", async (VitsTextRequest? request, CancellationToken ct) =>
@@ -1225,6 +1242,14 @@ public static class Program
         {
             (bool ok, string message) = await vits.TtsAsync(ct).ConfigureAwait(false);
             return Results.Json(new { ok, message, job = vits.Job(), engine = vits.Engine }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/tts-batch", async (VitsBatchRequest? request, CancellationToken ct) =>
+        {
+            // 一次调用跑完整批勾选的说话人——worker 内共用一次模型加载与一次文本前端，前端只等一个回执
+            (bool ok, string message, VitsBatchColumn? batch) = await vits
+                .TtsBatchAsync(request?.Sids ?? new List<int>(), ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, batch, job = vits.Job(), engine = vits.Engine }, JsonOptions);
         });
 
         app.MapPost("/api/vits/vc", async (CancellationToken ct) =>

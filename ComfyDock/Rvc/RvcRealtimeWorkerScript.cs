@@ -24,6 +24,8 @@ internal static class RvcRealtimeWorkerScript
 #                    "outputNoiseReduce":false,"usePv":false,"bypass":false,"sid":0,
 #                    "blockTime":0.25,"crossfadeTime":0.05,"extraTime":2.5}}
 #         {"cmd":"update","params":{"f0UpKey":12}}   # 只吃热更白名单：f0UpKey / formant / indexRate / threhold / 降噪 / bypass
+#         可选 "bridge":{"enabled":true,"blocks":2,"model":"346lab_S1","src":2,"dst":5,"modelsRoot":"...","repo":"...","device":"cuda"}
+#         —— start / update 都吃 bridge：RVC 输出攒 blocks 块过一轮 VITS 语音转换再送设备（设置取自 VITS 页签）
 #         {"cmd":"stop"} / {"cmd":"ping"} / {"cmd":"quit"}
 #   事件：{"ev":"ready"|"devices"|"started"|"stopped"|"level"|"latency"|"pong"|"error", ...}
 import os
@@ -528,6 +530,199 @@ def _phase_vocoder(a, b, fade_out, fade_in):
     return result
 
 
+# [段6b] 桥接 VITS 语音转换——RVC 输出攒 N 块过一轮 VITS VC 再送设备
+# 形态：回调只做「入队 + 取块」（不阻塞音频线程），推理在后台线程串行跑；
+# 攒够 blocks 块 → 降采样到 VITS 模型采样率 → 说话人转换 → 升回设备采样率 → 播放队列。
+# 设置面单一真相源 = VITS 页签（model / src / dst 由 C# 侧随 start / update 下发）。
+class VitsBridge:
+    def __init__(self, cfg, samplerate, block_frame):
+        self.samplerate = int(samplerate)
+        self.block_frame = int(block_frame)
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.jobs = []
+        self.pending = []
+        self.ready = np.zeros(0, dtype="float32")
+        self.blocks = max(1, min(16, int(cfg.get("blocks", 1) or 1)))
+        self.model = str(cfg.get("model", "") or "")
+        self.src = int(cfg.get("src", 0) or 0)
+        self.dst = int(cfg.get("dst", 1) or 1)
+        self.repo = str(cfg.get("repo", "") or "")
+        self.models_root = str(cfg.get("modelsRoot", "") or "")
+        self.device = str(cfg.get("device", "") or DEVICE)
+        self.enabled = bool(cfg.get("enabled", True))
+        self.runner = None
+        self.model_sr = 0
+        self.state = "loading"
+        self.message = ""
+        self.infer_ms = []
+        self.underruns = 0
+        self.dropped = 0
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    # [段6b.1] 模型——首次转换时加载（加载期间播放队列空着，出声为静音）
+    def _ensure(self):
+        if self.runner is None:
+            if self.repo and self.repo not in sys.path:
+                sys.path.insert(0, self.repo)
+            try:
+                import vits_worker as _vw
+            except Exception:
+                raise RuntimeError("导入 vits_worker 失败（检查 VITS 运行目录：%s）" % (self.repo or "（空）"))
+            device = self.device
+            if device.startswith("cuda") and not torch.cuda.is_available():
+                device = "cpu"
+            self.runner = _vw.Runner(self.models_root, device)
+        if not self.model:
+            raise RuntimeError("桥接没拿到 VITS 模型——去「本地生成 → VITS」选一个模型并保存")
+        if self.model_sr <= 0 or self.runner.cur is None or self.runner.cur["name"] != self.model:
+            self.state = "loading"
+            cur = self.runner._resolve(self.model)
+            self.model_sr = int(cur["sr"])
+        self.state = "ready"
+        return self.runner
+
+    # [段6b.2] 后台线程——串行取段推理；队列上限 4 段（跟不上实时就丢最旧，不无限涨延迟）
+    def _loop(self):
+        # 线程一起来就把模型加载掉——首段不用等加载（加载期间不占音频线程）
+        try:
+            self._ensure()
+        except Exception as exc:
+            self.state = "error"
+            self.message = str(exc)
+        while True:
+            with self.cond:
+                while self.running and not self.jobs:
+                    self.cond.wait(0.2)
+                if not self.running:
+                    return
+                seg = self.jobs.pop(0)
+            try:
+                runner = self._ensure()
+                t0 = time.perf_counter()
+                y = np.asarray(seg, dtype="float32")
+                # 段长按采样率比例换算——VITS 输出长度可能与输入差几帧，不校正会逐段累积漂移
+                need = int(round(y.shape[0] * float(self.model_sr) / float(self.samplerate))) if self.samplerate else y.shape[0]
+                if self.samplerate != self.model_sr:
+                    y = librosa.resample(y, orig_sr=self.samplerate, target_sr=self.model_sr)
+                if y.shape[0] < 4096:
+                    y = np.pad(y, (0, 4096 - y.shape[0]))
+                out = np.asarray(runner.vc_pcm(y, self.src, self.dst), dtype="float32")
+                if out.shape[0] > need:
+                    out = out[:need]
+                elif out.shape[0] < need:
+                    out = np.pad(out, (0, need - out.shape[0]))
+                if self.samplerate != self.model_sr:
+                    out = librosa.resample(out, orig_sr=self.model_sr, target_sr=self.samplerate)
+                # 回到设备采样率后再对齐到原段长——差几个样本也会逐段累积成漂移
+                seg_len = int(seg.shape[0]) if hasattr(seg, "shape") else len(seg)
+                if out.shape[0] > seg_len:
+                    out = out[:seg_len]
+                elif out.shape[0] < seg_len:
+                    out = np.pad(out, (0, seg_len - out.shape[0]))
+                self.infer_ms.append(round((time.perf_counter() - t0) * 1000, 1))
+                if len(self.infer_ms) > 20:
+                    self.infer_ms = self.infer_ms[-20:]
+                with self.cond:
+                    # 播放队列上限 = 攒块数 + 2 块——推理比实时快时队列会越攒越长（延迟只增不减），
+                    # 超出就丢最旧的（一次性丢帧，换来延迟有界）
+                    cap = (self.blocks + 2) * self.block_frame
+                    self.ready = np.concatenate((self.ready, np.asarray(out, dtype="float32")))
+                    if self.ready.shape[0] > cap:
+                        self.dropped += 1
+                        self.ready = self.ready[-cap:]
+                    self.message = ""
+            except Exception as exc:
+                self.state = "error"
+                self.message = str(exc)
+                sys.stderr.write("vits bridge: %s\n" % traceback.format_exc(limit=3))
+                sys.stderr.flush()
+
+    # [段6b.3] 音频回调侧——攒块 + 取一块播放（不够就静音，计欠载）
+    def push(self, block):
+        x = np.asarray(block, dtype="float32").reshape(-1)
+        n = x.shape[0]
+        with self.cond:
+            if self.enabled:
+                self.pending.append(x.copy())
+                if len(self.pending) >= self.blocks:
+                    seg = np.concatenate(self.pending)
+                    self.pending = []
+                    if len(self.jobs) >= 4:
+                        self.jobs.pop(0)
+                        self.dropped += 1
+                    self.jobs.append(seg)
+                    self.cond.notify()
+            if self.ready.shape[0] >= n:
+                out = self.ready[:n].copy()
+                self.ready = self.ready[n:]
+                return out
+            self.underruns += 1
+            return np.zeros(n, dtype="float32")
+
+    # [段6b.4] 热更——攒块数 / 说话人 / 模型（换模型下一段重载）即时生效，不断流
+    def update(self, cfg):
+        with self.cond:
+            if "blocks" in cfg:
+                self.blocks = max(1, min(16, int(cfg["blocks"] or 1)))
+            if "enabled" in cfg:
+                self.enabled = bool(cfg["enabled"])
+                if not self.enabled:
+                    self.pending = []
+                    self.jobs = []
+                    self.ready = np.zeros(0, dtype="float32")
+            if "src" in cfg:
+                self.src = int(cfg["src"] or 0)
+            if "dst" in cfg:
+                self.dst = int(cfg["dst"] or 0)
+            if "model" in cfg:
+                name = str(cfg["model"] or "")
+                if name != self.model:
+                    self.model = name
+                    self.model_sr = 0
+                    self.state = "loading"
+            if "repo" in cfg:
+                self.repo = str(cfg["repo"] or "")
+            if "modelsRoot" in cfg:
+                self.models_root = str(cfg["modelsRoot"] or "")
+            if "device" in cfg:
+                self.device = str(cfg["device"] or DEVICE)
+            self.cond.notify()
+
+    # [段6b.5] 状态——随 latency 事件上报（面板显示桥接队列与欠载）
+    def stats(self):
+        with self.cond:
+            queue_ms = round(self.ready.shape[0] * 1000.0 / float(self.samplerate), 1) if self.samplerate else 0.0
+            pending = len(self.pending)
+            under = self.underruns
+            dropped = self.dropped
+            state = self.state
+            message = self.message
+        ms = self.infer_ms
+        return {
+            "enabled": self.enabled,
+            "blocks": self.blocks,
+            "state": state,
+            "message": message,
+            "model": self.model,
+            "src": self.src,
+            "dst": self.dst,
+            "modelSr": self.model_sr,
+            "queueMs": queue_ms,
+            "pendingBlocks": pending,
+            "underruns": under,
+            "dropped": dropped,
+            "inferMs": round(sum(ms) / len(ms), 1) if ms else 0.0,
+        }
+
+    def stop(self):
+        self.running = False
+        with self.cond:
+            self.cond.notify_all()
+
+
 # [段7] 设备流管理——sounddevice 全双工（回调在音频线程，协议循环在主线程）
 def _db(peak):
     return round(20.0 * float(np.log10(max(float(peak), 1e-6))), 1)
@@ -555,6 +750,7 @@ class RealtimeHost:
         self.peak_out = 0.0
         self.status = "stopped"
         self.out_channels = 1
+        self.bridge = None
 
     def _callback(self, indata, outdata, frames, times, status):
         try:
@@ -563,6 +759,9 @@ class RealtimeHost:
                 return
             mono = indata[:, 0]
             out = self.chain.process(mono)
+            bridge = self.bridge
+            if bridge is not None and bridge.enabled:
+                out = bridge.push(out)
             if outdata.shape[1] == 1:
                 outdata[:, 0] = out
             else:
@@ -582,7 +781,15 @@ class RealtimeHost:
                 continue
             lat = chain.latency()
             lat["deviceMs"] = round(max(self.stream_latency) * 1000, 1)
-            lat["totalMs"] = round(lat["algoMs"] + lat["deviceMs"], 1)
+            bridge = self.bridge
+            if bridge is not None:
+                info = bridge.stats()
+                lat["bridge"] = info
+                lat["bridgeMs"] = round(info["queueMs"] + info["pendingBlocks"] * lat["blockMs"]
+                                        + info["inferMs"], 1)
+                lat["totalMs"] = round(lat["algoMs"] + lat["deviceMs"] + lat["bridgeMs"], 1)
+            else:
+                lat["totalMs"] = round(lat["algoMs"] + lat["deviceMs"], 1)
             ms = chain.infer_ms
             lat["inferMs"] = round(sum(ms) / len(ms), 1) if ms else 0.0
             lat["inferPeakMs"] = round(max(ms), 1) if ms else 0.0
@@ -619,6 +826,13 @@ class RealtimeHost:
 
         self.stop(silent=True)
         chain = RealtimeChain(model, pipeline, params, sr)
+
+        # 桥接 VITS-VC（开关与攒块数随 start 下发；关着就不建对象，回调零开销）
+        bridge_cfg = req.get("bridge") or {}
+        if bridge_cfg.get("enabled"):
+            self.bridge = VitsBridge(bridge_cfg, sr, chain.block_frame)
+        else:
+            self.bridge = None
 
         out_ch = 1
         try:
@@ -666,10 +880,18 @@ class RealtimeHost:
         lat = chain.latency()
         lat["deviceMs"] = round(max(self.stream_latency) * 1000, 1)
         lat["totalMs"] = round(lat["algoMs"] + lat["deviceMs"], 1)
+        bridge_stats = None
+        if self.bridge is not None:
+            bridge_stats = self.bridge.stats()
+            lat["bridge"] = bridge_stats
+            lat["bridgeMs"] = round(bridge_stats["queueMs"]
+                                    + bridge_stats["pendingBlocks"] * lat["blockMs"]
+                                    + bridge_stats["inferMs"], 1)
+            lat["totalMs"] = round(lat["totalMs"] + lat["bridgeMs"], 1)
         emit({"ev": "started", "model": os.path.basename(model_path),
               "sid": sid, "nSpk": n_spk,
               "input": in_idx, "output": out_idx, "exclusive": exclusive,
-              "latency": lat, "info": chain.info()})
+              "latency": lat, "info": chain.info(), "bridge": bridge_stats})
 
     def stop(self, silent=False):
         if self.stream is not None:
@@ -679,6 +901,10 @@ class RealtimeHost:
             except Exception:
                 pass
             self.stream = None
+        bridge = self.bridge
+        self.bridge = None
+        if bridge is not None:
+            bridge.stop()
         had = self.chain is not None
         self.chain = None
         self.status = "stopped"
@@ -690,8 +916,19 @@ class RealtimeHost:
         if self.chain is None:
             raise ValueError("实时链没在跑——先 start")
         applied, rejected = self.chain.update(params)
+        bridge_cfg = req.get("bridge")
+        if bridge_cfg is not None:
+            if self.bridge is None:
+                if bridge_cfg.get("enabled"):
+                    self.bridge = VitsBridge(bridge_cfg, self.chain.samplerate, self.chain.block_frame)
+            else:
+                self.bridge.update(bridge_cfg)
+                if not bridge_cfg.get("enabled"):
+                    self.bridge.stop()
+                    self.bridge = None
         emit({"ev": "updated", "applied": applied, "rejected": rejected,
-              "hot": list(HOT_KEYS)})
+              "hot": list(HOT_KEYS),
+              "bridge": self.bridge.stats() if self.bridge is not None else None})
 
 
 # [段8] 自检——不开设备，用正弦走同一条处理链，落 wav 并报延迟与输出时长
@@ -730,6 +967,32 @@ def selftest():
         chunks.append(chain.process(wave[start:start + n]))
     audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype="float32")
 
+    # 可选：整链再过一轮桥接（--vits-model <模型名> + --vits-repo / --vits-models）
+    bridge_stats = None
+    if arg("--vits-model") != "":
+        cfg = {
+            "enabled": True,
+            "blocks": int(arg("--bridge-blocks", "1")),
+            "model": arg("--vits-model"),
+            "src": int(arg("--vits-src", "0")),
+            "dst": int(arg("--vits-dst", "1")),
+            "modelsRoot": arg("--vits-models"),
+            "repo": arg("--vits-repo"),
+            "device": DEVICE,
+        }
+        bridge = VitsBridge(cfg, sr, n)
+        bridged = []
+        for start in range(0, total, n):
+            bridged.append(bridge.push(audio[start:start + n]))
+            time.sleep(float(n) / float(sr))  # 按实时节奏喂——不留节奏会把段全丢进丢弃队列
+        # 攒块 + 推理有延迟：再多喂静音把队列排空
+        for _ in range(int(cfg["blocks"]) + 2):
+            bridged.append(bridge.push(np.zeros(n, dtype="float32")))
+            time.sleep(float(n) / float(sr))
+        bridge_stats = bridge.stats()
+        bridge.stop()
+        audio = np.concatenate(bridged) if bridged else audio
+
     out_dir = os.path.dirname(out_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -748,7 +1011,8 @@ def selftest():
     emit({"ev": "selftest", "file": out_path, "model": os.path.basename(model_path),
           "inputSeconds": round(seconds, 2), "outputSeconds": round(len(audio) / float(sr), 2),
           "sampleRate": sr, "blocks": len(chunks), "latency": lat,
-          "wallSeconds": round(time.time() - t0, 2), "info": chain.info()})
+          "wallSeconds": round(time.time() - t0, 2), "info": chain.info(),
+          "bridge": bridge_stats})
 
 
 # [段9] 请求循环

@@ -902,6 +902,22 @@
             </div>
 
             <div class="rh-block">
+              <h4>桥接 VITS 语音转换 <span class="rh-dim" style="font-weight:normal">（RVC 变声结果再经一轮 VITS 换音色才发声；模型 / 说话人取自 VITS 页签，那边改了即时生效）</span></h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label class="moss-chk" title="打开后 RVC 输出先送 VITS 做说话人转换，转换完才送输出设备"><input type="checkbox" id="rvcRtVcBridge"> 桥接 VITS-VC</label>
+                  <span class="path" id="rvcRtVcLine">—</span>
+                </div>
+                <div class="rvc-slider">
+                  <label title="攒几块做一次推理：1 = 每块一次（延迟最低）；2 = 攒 2 块一次">逐块数量</label>
+                  <input type="range" id="rvcRtVcBlocks" min="1" max="8" step="1">
+                  <span class="val" id="rvcRtVcBlocksVal">1</span>
+                </div>
+                <div class="rh-dim" style="font-weight:normal">推理前降到 VITS 模型采样率（22.05k / 44.1k），转换后升回设备采样率；攒块越多延迟越高、欠载越少</div>
+              </div>
+            </div>
+
+            <div class="rh-block">
               <h4>改了要重开流 <span class="rh-dim" style="font-weight:normal">（松手自动保存；流在跑就自动重开——重开归后端，不用手动点按钮）</span></h4>
               <div class="moss-form">
                 <div class="rvc-slider">
@@ -1008,13 +1024,11 @@
           </div>
 
           <div class="rh-block">
-            <h4>模型与说话人（模型住 ComfyUI 的 models\VITS，一层分组后 .pth + 同名 .json）</h4>
+            <h4>模型（住 ComfyUI 的 models\VITS，一层分组后 .pth + 同名 .json；说话人在语音合成子签里勾）</h4>
             <div class="moss-form">
               <div class="moss-line">
                 <label>模型</label>
                 <select id="vitsModel" style="width:280px" title="346 系列模型；切模型会自动重载常驻引擎"></select>
-                <label>说话人（语音合成用）</label>
-                <select id="vitsSpeaker" style="width:300px" title="模型自带的多说话人清单（346lab_S1 有 386 个）；语音转换在下面各自选源 / 目标"></select>
                 <button class="btn-mini" id="vitsReload">重新扫描</button>
                 <span class="path" id="vitsEngineLine">—</span>
               </div>
@@ -1057,10 +1071,29 @@
                     <div class="moss-help-item"><b>噪声</b>（noise_scale，默认 0.667）——解码时的音色抖动。调高更有感情但可能毛刺，调低更稳但发平；0.6~0.8 是常用带。</div>
                     <div class="moss-help-item"><b>时长噪声</b>（noise_scale_w，默认 0.8）——音节时长的抖动。调高节奏更起伏，调低更均匀；跟音调无关，别和噪声混用。</div>
                     <div class="moss-help-item"><b>加载与停止</b>——首次加载模型约 1.5~2 秒；同一模型后续直接复用。切模型会自动重载。「停止引擎」把进程结束、显存还回去，下次合成重新加载。</div>
-                    <div class="moss-help-item"><b>产物</b>——落 <code>out\vits\&lt;时间戳&gt;_&lt;模型&gt;_tts.wav</code>，采样率跟模型走（22.05k / 44.1k），16-bit PCM。</div>
+                    <div class="moss-help-item"><b>批量合成</b>——勾选多个说话人后点「开始合成」，一次请求里跑完整批：模型只加载一次、文本前端（Open JTalk）只算一次，然后逐条出声；单条坏不牵连其余。勾「单说话人模式」就只跑选中的那一个。</div>
+                    <div class="moss-help-item"><b>产物矩阵</b>——每跑一次在右边加一列；行是说话人，列是这一次推理。点格子里的 ▶ 直接播（不铺播放器，386 人也只用一个音频元素）。矩阵按模型记住（换模型自动清空）。</div>
+                    <div class="moss-help-item"><b>产物</b>——落 <code>out\vits\&lt;批次时间戳&gt;_&lt;模型&gt;_s&lt;说话人索引&gt;_tts.wav</code>，采样率跟模型走（22.05k / 44.1k），16-bit PCM。</div>
                   </div>
                 </details>
               </div>
+            </div>
+
+            <div class="rh-block">
+              <h4>说话人与产物（行 = 说话人 · 列 = 每次推理；点格子播放）</h4>
+              <div class="moss-line">
+                <label class="moss-chk" title="勾上以后表格变单选——只跑选中的那一个说话人"><input type="checkbox" id="vitsSingleMode"> 单说话人模式</label>
+                <button class="btn-mini" id="vitsPickAll">全选</button>
+                <button class="btn-mini" id="vitsPickNone">全不选</button>
+                <button class="btn-mini" id="vitsPickInvert">反选</button>
+                <span class="path" id="vitsPickLine">—</span>
+                <button class="btn-mini" id="vitsMatrixClear">清空产物列</button>
+              </div>
+              <div id="vitsMatrix"></div>
+              <div class="moss-line">
+                <span class="path" id="vitsMatrixLine">—</span>
+              </div>
+              <audio id="vitsPlayer" preload="none" style="display:none"></audio>
             </div>
           </div>
 
@@ -1122,12 +1155,9 @@
             </div>
           </div>
 
-          <div class="rh-block">
-            <h4>产物（out\vits）</h4>
-            <div class="rh-list" id="vitsOutputs"></div>
-            <div class="moss-line">
-              <button class="btn-mini" id="vitsOpenOut">打开产物目录</button>
-            </div>
+          <div class="moss-line">
+            <button class="btn-mini" id="vitsOpenOut">打开产物目录（out\vits）</button>
+            <span class="path">产物按批次列在语音合成子签的矩阵里；磁盘文件也都在这个目录</span>
           </div>
         </div>
 
@@ -3706,6 +3736,7 @@
       set("rvcRtThreshold", cfg.threshold === undefined ? -50 : cfg.threshold);
       set("rvcRtRmsMixRate", cfg.rmsMixRate === undefined ? 0.25 : cfg.rmsMixRate);
       set("rvcRtProtect", cfg.protect === undefined ? 0.33 : cfg.protect);
+      set("rvcRtVcBlocks", cfg.vcBridgeBlocks === undefined ? 1 : cfg.vcBridgeBlocks);
       set("rvcRtSampleRate", String(cfg.sampleRate === undefined ? 48000 : cfg.sampleRate));
       set("rvcRtF0Method", cfg.f0Method || "rmvpe");
       set("rvcRtDevice", cfg.device || "cuda");
@@ -3714,6 +3745,7 @@
       document.getElementById("rvcRtInputNr").checked = cfg.inputDenoise === true;
       document.getElementById("rvcRtOutputNr").checked = cfg.outputDenoise === true;
       document.getElementById("rvcRtUsePv").checked = cfg.usePv === true;
+      document.getElementById("rvcRtVcBridge").checked = cfg.vcBridge === true;
       renderRvcRtModels();
       syncRvcRtRanges();
     }
@@ -3921,6 +3953,8 @@
         outputDenoise: document.getElementById("rvcRtOutputNr").checked,
         usePv: document.getElementById("rvcRtUsePv").checked,
         bypass: rvcRtMode() === "bypass",
+        vcBridge: document.getElementById("rvcRtVcBridge").checked,
+        vcBridgeBlocks: Math.round(mossNum("rvcRtVcBlocks", 1)),
         device: document.getElementById("rvcRtDevice").value || "cuda",
         half: document.getElementById("rvcRtHalf").checked,
         pythonPath: cfg.pythonPath || "",
@@ -4047,6 +4081,26 @@
         rows.push(row("互斥", false, "离线引擎在跑——先停「参数与变声」子签的引擎，再开实时"));
       }
 
+      const bridgeCfg = rvcRtData.bridge || {};
+      document.getElementById("rvcRtVcLine").textContent = bridgeCfg.model
+        ? ("VITS：" + bridgeCfg.model + " · 说话人 " + bridgeCfg.src + "→" + bridgeCfg.dst)
+        : "VITS 页签还没选模型";
+      if (state.bridgeEnabled) {
+        rows.push(row("桥接 VITS-VC", state.bridgeState === "ready",
+          (state.bridgeState || "") + (state.bridgeModel ? " · " + state.bridgeModel : "")
+          + " · 攒 " + state.bridgeBlocks + " 块"
+          + (state.bridgeState === "ready" ? " · 推理 " + state.bridgeInferMs + " 毫秒" : "")));
+        if (state.bridgeState === "error" && state.bridgeMessage) {
+          rows.push(row("桥接失败", false, state.bridgeMessage));
+        }
+        if (state.bridgeMs > 0) {
+          rows.push(row("桥接延迟", true, state.bridgeMs + " 毫秒（含攒块与播放队列）"));
+        }
+        if (state.bridgeUnderruns > 0) {
+          rows.push(row("桥接欠载", false, state.bridgeUnderruns + " 次——推理跟不上，调大逐块数量或块时长"));
+        }
+      }
+
       rows.push(row("状态", state.state === "running",
         (state.state || "stopped") + (state.message ? " · " + state.message : "")));
       if (state.state === "running") {
@@ -4122,7 +4176,7 @@
     }
 
     // 热更组：滑块松手就把值推给在跑的流（不重开流）；重开流组：松手自动保存并重开
-    const rvcRtHotIds = ["rvcRtF0UpKey", "rvcRtFormant", "rvcRtIndexRate", "rvcRtThreshold"];
+    const rvcRtHotIds = ["rvcRtF0UpKey", "rvcRtFormant", "rvcRtIndexRate", "rvcRtThreshold", "rvcRtVcBlocks"];
     const rvcRtRestartIds = ["rvcRtRmsMixRate", "rvcRtProtect", "rvcRtBlockTime", "rvcRtCrossfade",
       "rvcRtExtraTime", "rvcRtHarvest"];
     // 热更组滑块 / 降噪勾选：松手就把值推给在跑的流（热更，不重开）；流没在跑时也推一次——只落盘
@@ -4132,7 +4186,7 @@
       if (rvcRtHotIds.indexOf(el.id) >= 0) { el.onchange = rvcRtPushConfig; }
       else if (rvcRtRestartIds.indexOf(el.id) >= 0) { el.onchange = rvcRtAutoRestart; }
     }
-    for (const id of ["rvcRtInputNr", "rvcRtOutputNr"]) {
+    for (const id of ["rvcRtInputNr", "rvcRtOutputNr", "rvcRtVcBridge"]) {
       document.getElementById(id).onchange = rvcRtPushConfig;
     }
     document.getElementById("rvcRtUsePv").onchange = rvcRtAutoRestart;
@@ -4494,6 +4548,11 @@
     let vitsData = null;
     let vitsTimer = null;
     let vitsAutoLoad = false;
+    let vitsRosterKey = "";                                   // 当前名册标识（模型|人数）——变了就重置勾选
+    let vitsPicked = new Set();                               // 勾选的说话人索引
+    let vitsMatrixState = { model: "", columns: [] };         // 产物矩阵（按模型记，落 localStorage）
+    let vitsLiveJob = null;                                   // 最近一次 live 的 job（批量进行中带逐条 cells）
+    let vitsLastProgress = -1;                                // 上一帧进度（变了才重画，免得每 800 ms 闪）
 
     function setVitsView(view) {
       const tts = document.getElementById("vitsViewTts");
@@ -4534,6 +4593,168 @@
       ).join("");
       if (items.length === 0) { return; }
       if (current !== undefined && current !== null) { box.value = String(current); }
+    }
+
+    function vitsSpeakers() {
+      return (vitsData && vitsData.speakers) || [];
+    }
+
+    function vitsFirstPicked() {
+      const arr = Array.from(vitsPicked).sort((a, b) => a - b);
+      return arr.length > 0 ? arr[0] : 0;
+    }
+
+    function vitsPickLine() {
+      const line = document.getElementById("vitsPickLine");
+      if (!line) { return; }
+      const total = vitsSpeakers().length;
+      line.textContent = total === 0 ? "（当前模型没有名册）" : ("已勾 " + vitsPicked.size + " / " + total);
+    }
+
+    function renderVitsSpeakerList() {
+      // 说话人勾选与产物矩阵是同一张表（一人一行）——刷新即重画整表
+      renderVitsMatrix();
+    }
+
+    function vitsApplySingleMode() {
+      const single = !!(document.getElementById("vitsSingleMode") || {}).checked;
+      if (single && vitsPicked.size !== 1) {
+        vitsPicked = new Set([vitsFirstPicked()]);
+      }
+      renderVitsSpeakerList();
+    }
+
+    function vitsOnSpeakerClick(ev) {
+      const input = ev.target;
+      if (!input || input.dataset === undefined || input.dataset.sid === undefined) { return; }
+      const sid = parseInt(input.dataset.sid, 10);
+      if (isNaN(sid)) { return; }
+      const single = !!(document.getElementById("vitsSingleMode") || {}).checked;
+      if (single) {
+        vitsPicked = new Set([sid]);
+      } else if (input.checked) {
+        vitsPicked.add(sid);
+      } else {
+        vitsPicked.delete(sid);
+      }
+      renderVitsMatrix();
+    }
+
+    function vitsLoadMatrix() {
+      try {
+        const raw = localStorage.getItem("comfydock.vits.matrix");
+        if (!raw) { return; }
+        const saved = JSON.parse(raw);
+        if (saved && saved.columns && saved.columns.length > 0) { vitsMatrixState = saved; }
+      } catch (e) { /* 坏数据当没有 */ }
+    }
+
+    function vitsSaveMatrix() {
+      try { localStorage.setItem("comfydock.vits.matrix", JSON.stringify(vitsMatrixState)); }
+      catch (e) { /* 存不下不影响使用 */ }
+    }
+
+    function vitsMatrixReset(model) {
+      vitsMatrixState = { model: model || "", columns: [] };
+      vitsSaveMatrix();
+      renderVitsMatrix();
+    }
+
+    function vitsPlayCell(file) {
+      const player = document.getElementById("vitsPlayer");
+      if (!player || !file) { return; }
+      player.src = "/api/vits/audio?name=" + encodeURIComponent(file);
+      const p = player.play();
+      if (p && p.catch) { p.catch(() => {}); }
+    }
+
+    function renderVitsMatrix() {
+      const box = document.getElementById("vitsMatrix");
+      if (!box) { return; }
+      const cfg = vitsCfg();
+      const model = cfg.model || "";
+      if (vitsMatrixState.model !== model) {
+        // 换模型：旧列里的 sid 对不上新名册，矩阵重置
+        vitsMatrixState = { model, columns: [] };
+        vitsSaveMatrix();
+      }
+      const columns = vitsMatrixState.columns || [];
+      const line = document.getElementById("vitsMatrixLine");
+      const roster = vitsSpeakers();
+      if (roster.length === 0) {
+        box.innerHTML = '<span class="path">还没有名册——先选模型（进页签会自动加载第一个）</span>';
+        if (line) { line.textContent = "—"; }
+        vitsPickLine();
+        return;
+      }
+
+      const single = !!(document.getElementById("vitsSingleMode") || {}).checked;
+      const th = "padding:5px 8px;text-align:left;border-bottom:1px solid #e5e7eb;white-space:nowrap";
+      const td = "padding:3px 8px;border-bottom:1px solid #f1f5f9;white-space:nowrap";
+
+      // 显示列：进行中那批放最左，其余「最新在左」倒序——每列头上写清这一批说的是什么
+      const job = vitsLiveJob;
+      const running = !!(job && job.status === "running" && job.kind === "tts-batch");
+      const view = [];
+      if (running) {
+        view.push({
+          no: columns.length + 1,
+          text: cfg.text || "",
+          at: "",
+          cells: job.cells || [],
+          running: true,
+        });
+      }
+      for (let i = columns.length - 1; i >= 0; i--) {
+        view.push({
+          no: i + 1,
+          text: columns[i].text || "",
+          at: columns[i].at || "",
+          cells: columns[i].cells || [],
+          running: false,
+        });
+      }
+
+      const head = '<tr>'
+        + '<th style="' + th + ';width:1%">参与</th>'
+        + '<th style="' + th + '">说话人</th>'
+        + view.map(v => {
+          const tag = v.running
+            ? ("#" + v.no + " · 进行中")
+            : ("#" + v.no + " · " + rhText((v.at || "").slice(11, 16)));
+          const brief = v.text.length > 16 ? (v.text.slice(0, 16) + "…") : v.text;
+          return '<th style="' + th + '" title="' + rhText(v.text + (v.at ? (" · " + v.at) : "")) + '">'
+            + tag + '<br><span style="font-weight:400;color:#6b7280">' + rhText(brief || "（空）") + "</span></th>";
+        }).join("")
+        + "</tr>";
+
+      const body = roster.map(s => {
+        const on = vitsPicked.has(s.index) ? " checked" : "";
+        const kind = single ? "radio" : "checkbox";
+        const nameAttr = single ? ' name="vitsSpeakerRadio"' : "";
+        const cells = view.map(v => {
+          const hit = (v.cells || []).find(c => c.sid === s.index);
+          if (!hit || !hit.file) {
+            const bad = hit && hit.error ? "❌" : "—";
+            return '<td style="' + td + '" class="path" title="' + rhText((hit && hit.error) || "") + '">' + bad + "</td>";
+          }
+          const seconds = hit.seconds ? (" " + hit.seconds.toFixed(1) + "s") : "";
+          return '<td style="' + td + '"><button class="btn-mini vits-play" data-file="'
+            + rhText(hit.file) + '" title="' + rhText(hit.file) + '">▶' + seconds + "</button></td>";
+        }).join("");
+        return "<tr>"
+          + '<td style="' + td + ';text-align:center"><input type="' + kind + '"' + nameAttr
+          + ' data-sid="' + s.index + '"' + on + ' style="cursor:pointer"></td>'
+          + '<td style="' + td + '">' + rhText(s.index + " · " + s.name) + "</td>"
+          + cells + "</tr>";
+      }).join("");
+
+      box.innerHTML = '<table style="border-collapse:collapse;font-size:12px;width:100%">'
+        + "<thead>" + head + "</thead><tbody>" + body + "</tbody></table>";
+      if (line) {
+        line.textContent = "共 " + roster.length + " 个说话人 · " + columns.length + " 次推理 · 勾了 " + vitsPicked.size;
+      }
+      vitsPickLine();
     }
 
     function renderVitsModels() {
@@ -4588,10 +4809,17 @@
       if (!vitsData) { return; }
       const cfg = vitsCfg();
       renderVitsModels();
-      vitsFillSpeakers("vitsSpeaker", vitsData.speakers, cfg.sid);
+      // 说话人勾选：首次加载或换模型后默认全勾（名册变化也重置）
+      const roster = vitsSpeakers();
+      const rosterKey = (cfg.model || "") + "|" + roster.length;
+      if (vitsRosterKey !== rosterKey) {
+        vitsRosterKey = rosterKey;
+        vitsPicked = new Set(roster.map(s => s.index));
+      }
       vitsFillSpeakers("vitsVcSrc", vitsData.speakers, cfg.vcSrc);
       vitsFillSpeakers("vitsVcDst", vitsData.speakers, cfg.vcDst);
       renderVitsOutputs();
+      renderVitsMatrix();
       renderVitsEnv();
 
       const textBox = document.getElementById("vitsText");
@@ -4693,7 +4921,7 @@
         device: (document.getElementById("vitsDevice") || {}).value || "",
         model: (document.getElementById("vitsModel") || {}).value || "",
         text: (document.getElementById("vitsText") || {}).value || "",
-        sid: parseInt((document.getElementById("vitsSpeaker") || {}).value || "0", 10) || 0,
+        sid: vitsFirstPicked(),
         lengthScale: parseFloat((document.getElementById("vitsLength") || {}).value || "1") || 1,
         noiseScale: parseFloat((document.getElementById("vitsNoise") || {}).value || "0.667") || 0.667,
         noiseScaleW: parseFloat((document.getElementById("vitsNoiseW") || {}).value || "0.8") || 0.8,
@@ -4741,13 +4969,37 @@
 
     async function vitsRunTts() {
       const line = document.getElementById("vitsJobLine");
+      const sids = Array.from(vitsPicked).sort((a, b) => a - b);
+      if (sids.length === 0) {
+        line.textContent = "先勾至少一个说话人";
+        toast("❌ 先勾至少一个说话人");
+        return;
+      }
       if (!(await vitsSaveCfg())) { return; }
-      line.textContent = "合成中…（首次加载模型约 2 秒）";
-      const data = await vitsPost("/api/vits/tts", {});
-      if (!data) { line.textContent = "请求失败"; return; }
+      line.textContent = "批量合成中…（" + sids.length + " 个说话人，首次加载模型约 2 秒）";
+      // 立刻挂一个「进行中」列（最左），后面的逐条回执按 800 ms 轮询往里填
+      vitsLiveJob = { status: "running", kind: "tts-batch", progress: 0, total: sids.length, cells: [], message: "批量合成中… 0/" + sids.length };
+      vitsLastProgress = -1;
+      renderVitsMatrix();
+      const data = await vitsPost("/api/vits/tts-batch", { sids: sids });
+      if (!data) {
+        vitsLiveJob = null;
+        vitsLastProgress = -1;
+        renderVitsMatrix();
+        line.textContent = "请求失败";
+        return;
+      }
+      vitsLiveJob = data.job || null;
+      vitsLastProgress = -1;
       vitsShowJob(data.job);
-      if (data.ok) { toast("✅ " + (data.message || "合成完成")); await loadVits(); }
-      else { toast("❌ " + (data.message || "合成失败")); }
+      if (data.batch && data.batch.cells && data.batch.cells.length > 0) {
+        vitsMatrixState.model = vitsCfg().model || "";
+        vitsMatrixState.columns.push(data.batch);
+        vitsSaveMatrix();
+      }
+      renderVitsMatrix();
+      if (data.ok) { toast("✅ " + (data.message || "批量完成")); await loadVits(); }
+      else { toast("❌ " + (data.message || "批量失败")); }
     }
 
     async function vitsRunVc() {
@@ -4785,11 +5037,45 @@
               : ((engine.state || "stopped") + (engine.message ? (" · " + engine.message) : ""));
           }
           vitsShowJob(data.job);
+          // 批量在跑：把逐条回执接进来，边跑边填格子（800 ms 粒度）
+          vitsLiveJob = data.job || null;
+          const job = vitsLiveJob;
+          const running = !!(job && job.status === "running" && job.kind === "tts-batch");
+          const progress = running ? (job.progress || 0) : -1;
+          if (progress !== vitsLastProgress) {
+            vitsLastProgress = progress;
+            renderVitsMatrix();
+          }
         } catch (e) { /* 轮询失败不打扰 */ }
-      }, 2000);
+      }, 800);
     }
 
     document.getElementById("vitsReload").addEventListener("click", loadVits);
+    document.getElementById("vitsPickAll").addEventListener("click", () => {
+      vitsPicked = new Set(vitsSpeakers().map(s => s.index));
+      renderVitsSpeakerList();
+    });
+    document.getElementById("vitsPickNone").addEventListener("click", () => {
+      vitsPicked = new Set();
+      renderVitsSpeakerList();
+    });
+    document.getElementById("vitsPickInvert").addEventListener("click", () => {
+      const next = new Set();
+      for (const s of vitsSpeakers()) { if (!vitsPicked.has(s.index)) { next.add(s.index); } }
+      vitsPicked = next;
+      renderVitsSpeakerList();
+    });
+    document.getElementById("vitsSingleMode").addEventListener("change", vitsApplySingleMode);
+    document.getElementById("vitsMatrix").addEventListener("change", vitsOnSpeakerClick);
+    document.getElementById("vitsMatrix").addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest(".vits-play") : null;
+      if (btn) { vitsPlayCell(btn.dataset.file); }
+    });
+    document.getElementById("vitsMatrixClear").addEventListener("click", () => {
+      vitsMatrixReset(vitsCfg().model || "");
+      toast("矩阵已清空（磁盘上的产物还在）");
+    });
+    vitsLoadMatrix();
     document.getElementById("vitsSave").addEventListener("click", async () => { if (await vitsSaveCfg()) { toast("✅ 参数已保存"); } });
     document.getElementById("vitsSavePaths").addEventListener("click", vitsSavePaths);
     document.getElementById("vitsClean").addEventListener("click", vitsCleanPreview);
@@ -4798,12 +5084,20 @@
     document.getElementById("vitsStop").addEventListener("click", vitsStopRun);
     document.getElementById("vitsOpenOut").addEventListener("click", () => vitsPost("/api/vits/open-out", {}));
     document.getElementById("vitsModel").addEventListener("change", async () => {
+      const picked = (document.getElementById("vitsModel") || {}).value || "";
+      vitsRosterKey = "";
+      vitsMatrixReset(picked);
       await vitsSaveCfg();
       const data = await vitsPost("/api/vits/load?model=" + encodeURIComponent((document.getElementById("vitsModel") || {}).value || ""), {});
       if (data && data.ok) { toast("✅ " + (data.message || "模型已加载")); }
       else if (data) { toast("❌ " + (data.message || "加载失败")); }
       await loadVits();
     });
+    // 说话人 / 设备改了即时落盘——RVC 实时链的桥接靠这次落盘把新设置推给在跑的流
+    for (const id of ["vitsVcSrc", "vitsVcDst", "vitsDevice"]) {
+      const box = document.getElementById(id);
+      if (box) { box.addEventListener("change", () => { vitsSaveCfg(); }); }
+    }
     for (const tab of document.querySelectorAll("#genPanelVits .sub-tab")) {
       tab.addEventListener("click", () => setVitsView(tab.dataset.vitsView));
     }
