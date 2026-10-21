@@ -1000,6 +1000,137 @@
           </div>
         </div>
 
+        <div id="genPanelVits" style="display:none">
+          <div class="sub-tabs">
+            <button class="sub-tab on" data-vits-view="vc">语音转换</button>
+            <button class="sub-tab" data-vits-view="tts">语音合成</button>
+            <button class="sub-tab" data-vits-view="env">环境与模型</button>
+          </div>
+
+          <div class="rh-block">
+            <h4>模型与说话人（模型住 ComfyUI 的 models\VITS，一层分组后 .pth + 同名 .json）</h4>
+            <div class="moss-form">
+              <div class="moss-line">
+                <label>模型</label>
+                <select id="vitsModel" style="width:280px" title="346 系列模型；切模型会自动重载常驻引擎"></select>
+                <label>说话人（语音合成用）</label>
+                <select id="vitsSpeaker" style="width:300px" title="模型自带的多说话人清单（346lab_S1 有 386 个）；语音转换在下面各自选源 / 目标"></select>
+                <button class="btn-mini" id="vitsReload">重新扫描</button>
+                <span class="path" id="vitsEngineLine">—</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="vitsViewTts" style="display:none">
+
+            <div class="rh-block">
+              <h4>文本（日语；打开符号输入后可直接填音素串）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <textarea id="vitsText" rows="4" style="width:100%;box-sizing:border-box;font-family:inherit" title="要合成的文本；打开符号输入时这里填音素串（如 ko↑Nniʧiwa）"></textarea>
+                </div>
+                <div class="moss-line">
+                  <button class="btn-mini" id="vitsClean">清理预览</button>
+                  <label class="moss-chk" title="打开后不再走日语前端，直接把框里的文本当音素串（对应 MoeGoe 的 [CLEANED] 标记）"><input type="checkbox" id="vitsCleaned"> 符号输入（已是音素串）</label>
+                  <span class="path" id="vitsCleanLine" style="white-space:normal">—</span>
+                </div>
+                <div class="moss-line">
+                  <label title="length_scale：大于 1 更慢、小于 1 更快">语速</label>
+                  <input type="number" id="vitsLength" step="0.05" min="0.2" max="3" style="width:80px">
+                  <label title="noise_scale：音色抖动，默认 0.667">噪声</label>
+                  <input type="number" id="vitsNoise" step="0.05" min="0" max="2" style="width:80px">
+                  <label title="noise_scale_w：时长抖动，默认 0.8">时长噪声</label>
+                  <input type="number" id="vitsNoiseW" step="0.05" min="0" max="2" style="width:80px">
+                  <button class="btn-mini" id="vitsSave">保存参数</button>
+                  <button class="btn-primary" id="vitsTtsRun">开始合成</button>
+                  <button class="btn-mini" id="vitsStop" title="结束常驻引擎（显存还回去）">停止引擎</button>
+                </div>
+                <div class="moss-line"><span class="path" id="vitsJobLine">—</span></div>
+                <details class="moss-help">
+                  <summary>参数说明（每个选项是什么效果 / 什么时候该改）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>这是在干什么</b>——把 VITS（MoeGoe 血统）的语音合成搬进面板：模型住本机 ComfyUI 的 <code>models\VITS</code>，推理借 <code>python_embeded</code> 跑常驻 worker，不启 ComfyUI 服务、不开端口。</div>
+                    <div class="moss-help-item"><b>文本前端</b>——日语文本经 Open JTalk 转成带重音标记的音素串（<code>ko↑Nniʧiwa</code> 这种），↑↓ 是音调起伏。点「清理预览」能看到前端到底吐了什么；发音怪时先看这里。</div>
+                    <div class="moss-help-item"><b>符号输入</b>——勾上后文本不再过前端，直接把框里的内容当音素串喂模型。用途：前端读错音时手动改（把汉字换成假名、或直接写音素）。关着的时候写汉字就行。</div>
+                    <div class="moss-help-item"><b>说话人</b>——模型自带的名册。<code>346lab_S1</code> 386 个、<code>346lab_v3</code> 85 个、<code>346star_*</code> 各 16 个。选谁就是用谁的音色；同名角色在不同模型里音质与训练程度不一样，多试几套。</div>
+                    <div class="moss-help-item"><b>语速</b>（length_scale，默认 1）——大于 1 更慢、小于 1 更快。0.9~1.1 是自然区间；拉太大会出机械拖音，太小会吞字。</div>
+                    <div class="moss-help-item"><b>噪声</b>（noise_scale，默认 0.667）——解码时的音色抖动。调高更有感情但可能毛刺，调低更稳但发平；0.6~0.8 是常用带。</div>
+                    <div class="moss-help-item"><b>时长噪声</b>（noise_scale_w，默认 0.8）——音节时长的抖动。调高节奏更起伏，调低更均匀；跟音调无关，别和噪声混用。</div>
+                    <div class="moss-help-item"><b>加载与停止</b>——首次加载模型约 1.5~2 秒；同一模型后续直接复用。切模型会自动重载。「停止引擎」把进程结束、显存还回去，下次合成重新加载。</div>
+                    <div class="moss-help-item"><b>产物</b>——落 <code>out\vits\&lt;时间戳&gt;_&lt;模型&gt;_tts.wav</code>，采样率跟模型走（22.05k / 44.1k），16-bit PCM。</div>
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+
+          <div id="vitsViewVc">
+            <div class="rh-block">
+              <h4>换音色（保留内容与时长，只换成目标说话人的音色）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <input type="text" id="vitsVcAudio" style="width:560px" placeholder="待转换音频完整路径（wav / mp3 / flac 都行，会按模型采样率重采样）">
+                </div>
+                <div class="moss-line">
+                  <label>原说话人</label><select id="vitsVcSrc" style="width:280px"></select>
+                  <label>目标说话人</label><select id="vitsVcDst" style="width:280px"></select>
+                  <button class="btn-primary" id="vitsVcRun">开始转换</button>
+                  <span class="path" id="vitsVcLine">—</span>
+                </div>
+                <details class="moss-help">
+                  <summary>参数说明（源 / 目标说话人怎么选）</summary>
+                  <div class="moss-help-body">
+                    <div class="moss-help-item"><b>原理</b>——拿输入音频算谱包络 → 用「原说话人」的条件编码出内容特征 → 用「目标说话人」的条件解码出声。所以两个都是同一个模型里的说话人索引，不是两个模型。</div>
+                    <div class="moss-help-item"><b>原说话人</b>——应当选「这段音频本来是谁」。选错了内容特征会被套上别人的说话方式，听感发飘；不确定就先合成一段已知说话人的音频做实验。</div>
+                    <div class="moss-help-item"><b>目标说话人</b>——出来的音色。跨性别、跨年龄都能转，但差距越大越容易出现音高失真；同档位的角色之间转换最稳。</div>
+                    <div class="moss-help-item"><b>时长</b>——输出时长与输入一致（content 与时长都保留），不重排、不重断句。</div>
+                    <div class="moss-help-item"><b>产物</b>——落 <code>out\vits\&lt;时间戳&gt;_&lt;模型&gt;_vc&lt;源&gt;to&lt;目标&gt;.wav</code>。</div>
+                  </div>
+                </details>
+              </div>
+            </div>
+          </div>
+
+          <div id="vitsViewEnv" style="display:none">
+            <div class="rh-block">
+              <h4>环境（逐条实测，缺什么红着说话）</h4>
+              <div class="rh-list" id="vitsEnvList"></div>
+            </div>
+
+            <div class="rh-block">
+              <h4>路径（改完点保存；引擎会按新路径重载）</h4>
+              <div class="moss-form">
+                <div class="moss-line">
+                  <label>解释器</label><input type="text" id="vitsPythonPath" style="width:520px" title="本机 ComfyUI 的 python_embeded\python.exe">
+                </div>
+                <div class="moss-line">
+                  <label>worker 脚本</label><input type="text" id="vitsScriptPath" style="width:520px" title="随包 runtime\vits\vits_worker.py">
+                </div>
+                <div class="moss-line">
+                  <label>模型根目录</label><input type="text" id="vitsModelsRoot" style="width:520px" title="ComfyUI 下的 models\VITS（一层分组，<名字>.pth + <名字>.json）">
+                </div>
+                <div class="moss-line">
+                  <label>推理设备</label>
+                  <select id="vitsDevice" title="auto 有卡就用卡；cpu 慢但能排查">
+                    <option value="auto">auto（有卡就用卡）</option>
+                    <option value="cuda">cuda（显卡）</option>
+                    <option value="cpu">cpu（慢，排查用）</option>
+                  </select>
+                  <button class="btn-mini" id="vitsSavePaths">保存路径</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rh-block">
+            <h4>产物（out\vits）</h4>
+            <div class="rh-list" id="vitsOutputs"></div>
+            <div class="moss-line">
+              <button class="btn-mini" id="vitsOpenOut">打开产物目录</button>
+            </div>
+          </div>
+        </div>
+
         <div id="genPanelOmni" style="display:none">
           <div class="sub-tabs">
             <button class="sub-tab on" data-omni-view="gen">参数与转写</button>
@@ -2455,6 +2586,7 @@
       { id: "tagger", name: "WD 打标", note: "图片反推 Danbooru 标签" },
       { id: "rvc", name: "RVC 变声", note: "音色转换 · 本地离线" },
       { id: "omni", name: "Qwen3-Omni", note: "音频转写 · 本地离线" },
+      { id: "vits", name: "MoeGoe（VITS）", note: "日语语音合成 / 换音色 · 346 角色" },
     ];
     let genId = "moss";
 
@@ -2476,16 +2608,19 @@
       const taggerPanel = document.getElementById("genPanelTagger");
       const rvcPanel = document.getElementById("genPanelRvc");
       const omniPanel = document.getElementById("genPanelOmni");
+      const vitsPanel = document.getElementById("genPanelVits");
       if (mossPanel) { mossPanel.style.display = id === "moss" ? "block" : "none"; }
       if (ttsPanel) { ttsPanel.style.display = id === "tts" ? "block" : "none"; }
       if (taggerPanel) { taggerPanel.style.display = id === "tagger" ? "block" : "none"; }
       if (rvcPanel) { rvcPanel.style.display = id === "rvc" ? "block" : "none"; }
       if (omniPanel) { omniPanel.style.display = id === "omni" ? "block" : "none"; }
+      if (vitsPanel) { vitsPanel.style.display = id === "vits" ? "block" : "none"; }
       if (id === "tts") { loadTts(); startTtsPoller(); }
       if (id === "moss") { loadMoss(); startMossPoller(); }
       if (id === "tagger") { loadTagger(); startTaggerPoller(); }
       if (id === "rvc") { loadRvc(); startRvcPoller(); }
       if (id === "omni") { loadOmni(); startOmniPoller(); }
+      if (id === "vits") { loadVits(); startVitsPoller(); }
     }
 
     // 生成器内部的子签：参数与出图（主面）/ 环境与依赖（内核 / 插件 / 显卡 / 权重下载）
@@ -4353,6 +4488,325 @@
       const data = await rhPost("/api/rvc/open-out", {});
       if (data && !data.ok) { toast("打开失败：" + (data.error || "未知")); }
     };
+
+    // ---- 本地生成（VITS · MoeGoe 血统）：语音合成 / 语音转换 ----
+    // 后端是常驻 worker（模型只加载一次），状态靠 /api/vits/live 轮询；文本清理走 /api/vits/clean 单独预览。
+    let vitsData = null;
+    let vitsTimer = null;
+    let vitsAutoLoad = false;
+
+    function setVitsView(view) {
+      const tts = document.getElementById("vitsViewTts");
+      const vc = document.getElementById("vitsViewVc");
+      const env = document.getElementById("vitsViewEnv");
+      if (!tts || !vc || !env) { return; }
+      tts.style.display = view === "tts" ? "block" : "none";
+      vc.style.display = view === "vc" ? "block" : "none";
+      env.style.display = view === "env" ? "block" : "none";
+      for (const tab of document.querySelectorAll("#genPanelVits .sub-tab")) {
+        tab.classList.toggle("on", tab.dataset.vitsView === view);
+      }
+    }
+
+    function vitsCfg() {
+      return (vitsData && vitsData.config) || {};
+    }
+
+    async function vitsPost(url, body) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body || {}),
+        });
+        return await res.json();
+      } catch (e) {
+        return { ok: false, message: e.message, error: e.message };
+      }
+    }
+
+    function vitsFillSpeakers(selectId, list, current) {
+      const box = document.getElementById(selectId);
+      if (!box) { return; }
+      const items = list || [];
+      box.innerHTML = items.map(s =>
+        '<option value="' + s.index + '">' + rhText(s.index + " · " + s.name) + "</option>"
+      ).join("");
+      if (items.length === 0) { return; }
+      if (current !== undefined && current !== null) { box.value = String(current); }
+    }
+
+    function renderVitsModels() {
+      const box = document.getElementById("vitsModel");
+      if (!box) { return; }
+      const models = (vitsData && vitsData.models) || [];
+      const cfg = vitsCfg();
+      if (models.length === 0) {
+        box.innerHTML = '<option value="">（模型目录里没有模型）</option>';
+        return;
+      }
+      box.innerHTML = models.map(m =>
+        '<option value="' + rhText(m.name) + '"' + (m.ok ? "" : " disabled") + ">"
+        + rhText(m.group + " / " + m.name + (m.ok ? (" · " + m.speakers + " 人 · " + (m.samplingRate / 1000) + "k") : " · 缺 config"))
+        + "</option>"
+      ).join("");
+      if (cfg.model) { box.value = cfg.model; }
+    }
+
+    function renderVitsOutputs() {
+      const box = document.getElementById("vitsOutputs");
+      if (!box) { return; }
+      const list = (vitsData && vitsData.outputs) || [];
+      if (list.length === 0) {
+        box.innerHTML = '<span class="path">还没有产物</span>';
+        return;
+      }
+      box.innerHTML = list.map(name =>
+        '<div class="rh-row"><span class="path">' + rhText(name) + "</span>"
+        + '<audio controls preload="none" style="height:28px" src="/api/vits/audio?name=' + encodeURIComponent(name) + '"></audio>'
+        + "</div>"
+      ).join("");
+    }
+
+    function renderVitsEnv() {
+      const box = document.getElementById("vitsEnvList");
+      if (!box || !vitsData) { return; }
+      const items = [
+        { name: "解释器（python_embeded）", ok: !!vitsData.pythonOk, note: vitsCfg().pythonPath || "" },
+        { name: "worker 脚本（runtime\\vits）", ok: !!vitsData.scriptOk, note: vitsCfg().scriptPath || "" },
+        { name: "模型根目录（models\\VITS）", ok: !!vitsData.modelsRootOk, note: vitsCfg().modelsRoot || "" },
+        { name: "产物目录", ok: true, note: vitsData.outDir || "" },
+        { name: "引擎", ok: vitsData.engine && vitsData.engine.state === "ready", note: (vitsData.engine && vitsData.engine.message) || "" },
+      ];
+      box.innerHTML = items.map(it =>
+        '<div class="rh-row"><span class="' + (it.ok ? "ok" : "bad") + '">' + (it.ok ? "✅" : "❌") + "</span>"
+        + "<span>" + rhText(it.name) + '</span><span class="path">' + rhText(it.note) + "</span></div>"
+      ).join("");
+    }
+
+    function renderVitsAll() {
+      if (!vitsData) { return; }
+      const cfg = vitsCfg();
+      renderVitsModels();
+      vitsFillSpeakers("vitsSpeaker", vitsData.speakers, cfg.sid);
+      vitsFillSpeakers("vitsVcSrc", vitsData.speakers, cfg.vcSrc);
+      vitsFillSpeakers("vitsVcDst", vitsData.speakers, cfg.vcDst);
+      renderVitsOutputs();
+      renderVitsEnv();
+
+      const textBox = document.getElementById("vitsText");
+      if (textBox && document.activeElement !== textBox) { textBox.value = cfg.text || ""; }
+      const audioBox = document.getElementById("vitsVcAudio");
+      if (audioBox && document.activeElement !== audioBox) { audioBox.value = cfg.vcAudio || ""; }
+      const lengthBox = document.getElementById("vitsLength");
+      if (lengthBox && document.activeElement !== lengthBox) { lengthBox.value = cfg.lengthScale || 1; }
+      const noiseBox = document.getElementById("vitsNoise");
+      if (noiseBox && document.activeElement !== noiseBox) { noiseBox.value = cfg.noiseScale || 0.667; }
+      const noiseWBox = document.getElementById("vitsNoiseW");
+      if (noiseWBox && document.activeElement !== noiseWBox) { noiseWBox.value = cfg.noiseScaleW || 0.8; }
+      const cleanedBox = document.getElementById("vitsCleaned");
+      if (cleanedBox) { cleanedBox.checked = !!cfg.cleaned; }
+
+      const py = document.getElementById("vitsPythonPath");
+      if (py && document.activeElement !== py) { py.value = cfg.pythonPath || ""; }
+      const script = document.getElementById("vitsScriptPath");
+      if (script && document.activeElement !== script) { script.value = cfg.scriptPath || ""; }
+      const root = document.getElementById("vitsModelsRoot");
+      if (root && document.activeElement !== root) { root.value = cfg.modelsRoot || ""; }
+      const device = document.getElementById("vitsDevice");
+      if (device) { device.value = cfg.device || "auto"; }
+
+      const engine = vitsData.engine || {};
+      const line = document.getElementById("vitsEngineLine");
+      if (line) {
+        line.textContent = engine.state === "ready"
+          ? ("引擎就绪 · " + (engine.model || "未加载模型") + (engine.device ? (" · " + engine.device) : ""))
+          : ((engine.state || "stopped") + (engine.message ? (" · " + engine.message) : ""));
+      }
+      vitsShowJob(vitsData.job);
+
+      // 首次进本页签：有模型但引擎还没加载过 → 自动选第一个并加载一次（否则说话人空、清理预览报「还没选模型」）
+      const modelSel = document.getElementById("vitsModel");
+      if (!vitsAutoLoad && engine.state !== "ready" && modelSel && modelSel.value
+        && vitsData.models && vitsData.models.length > 0) {
+        vitsAutoLoad = true;
+        vitsAutoLoadFirst();
+      }
+    }
+
+    async function vitsAutoLoadFirst() {
+      const name = (document.getElementById("vitsModel") || {}).value || "";
+      if (!name) { return; }
+      const data = await vitsPost("/api/vits/load?model=" + encodeURIComponent(name), {});
+      if (data && data.ok) { toast("✅ " + (data.message || "模型已加载")); }
+      else if (data) { toast("❌ " + (data.message || "加载失败")); }
+      await loadVits();
+    }
+
+    function vitsShowJob(job) {
+      const line = document.getElementById("vitsJobLine");
+      if (!line || !job) { return; }
+      if (job.status === "running") { line.textContent = job.message || "跑着呢…"; return; }
+      if (job.status === "done") {
+        line.textContent = "✅ " + (job.message || "完成") + " · " + (job.file || "") + (job.at ? (" · " + job.at) : "");
+        return;
+      }
+      if (job.status === "error") { line.textContent = "❌ " + (job.message || "失败"); return; }
+      line.textContent = "—";
+    }
+
+    async function loadVits() {
+      try {
+        vitsData = await fetch("/api/vits", { cache: "no-store" }).then(r => r.json());
+      } catch (e) {
+        vitsData = null;
+        document.getElementById("vitsJobLine").textContent = "读取失败：" + e.message;
+        return;
+      }
+      renderVitsAll();
+    }
+
+    function vitsBody(extra) {
+      const cfg = vitsCfg();
+      const body = {
+        pythonPath: "",
+        scriptPath: "",
+        modelsRoot: "",
+        device: "",
+        model: cfg.model || "",
+        text: cfg.text || "",
+        sid: cfg.sid || 0,
+        lengthScale: cfg.lengthScale || 1,
+        noiseScale: cfg.noiseScale || 0.667,
+        noiseScaleW: cfg.noiseScaleW || 0.8,
+        cleaned: !!cfg.cleaned,
+        vcAudio: cfg.vcAudio || "",
+        vcSrc: cfg.vcSrc || 0,
+        vcDst: cfg.vcDst || 0,
+      };
+      for (const k in (extra || {})) { body[k] = extra[k]; }
+      return body;
+    }
+
+    async function vitsSaveCfg() {
+      const body = vitsBody({
+        device: (document.getElementById("vitsDevice") || {}).value || "",
+        model: (document.getElementById("vitsModel") || {}).value || "",
+        text: (document.getElementById("vitsText") || {}).value || "",
+        sid: parseInt((document.getElementById("vitsSpeaker") || {}).value || "0", 10) || 0,
+        lengthScale: parseFloat((document.getElementById("vitsLength") || {}).value || "1") || 1,
+        noiseScale: parseFloat((document.getElementById("vitsNoise") || {}).value || "0.667") || 0.667,
+        noiseScaleW: parseFloat((document.getElementById("vitsNoiseW") || {}).value || "0.8") || 0.8,
+        cleaned: !!(document.getElementById("vitsCleaned") || {}).checked,
+        vcAudio: (document.getElementById("vitsVcAudio") || {}).value || "",
+        vcSrc: parseInt((document.getElementById("vitsVcSrc") || {}).value || "0", 10) || 0,
+        vcDst: parseInt((document.getElementById("vitsVcDst") || {}).value || "0", 10) || 0,
+      });
+      const data = await vitsPost("/api/vits/config", body);
+      if (data && data.ok) {
+        vitsData = vitsData || {};
+        vitsData.config = data.config;
+        return true;
+      }
+      toast("❌ " + ((data && (data.error || data.message)) || "保存失败"));
+      return false;
+    }
+
+    async function vitsSavePaths() {
+      const body = vitsBody({
+        pythonPath: (document.getElementById("vitsPythonPath") || {}).value || "",
+        scriptPath: (document.getElementById("vitsScriptPath") || {}).value || "",
+        modelsRoot: (document.getElementById("vitsModelsRoot") || {}).value || "",
+        device: (document.getElementById("vitsDevice") || {}).value || "",
+      });
+      const data = await vitsPost("/api/vits/config", body);
+      if (!data || !data.ok) {
+        toast("❌ " + ((data && (data.error || data.message)) || "保存失败"));
+        return;
+      }
+      toast("✅ 路径已保存");
+      await loadVits();
+    }
+
+    async function vitsCleanPreview() {
+      const line = document.getElementById("vitsCleanLine");
+      const text = (document.getElementById("vitsText") || {}).value || "";
+      if (text.trim().length === 0) { line.textContent = "先写点文本"; return; }
+      line.textContent = "清理中…";
+      const data = await vitsPost("/api/vits/clean", { text: text });
+      if (!data) { line.textContent = "清理失败"; return; }
+      if (!data.ok) { line.textContent = "❌ " + (data.error || "清理失败"); return; }
+      line.textContent = "→ " + (data.cleaned || "（空）");
+    }
+
+    async function vitsRunTts() {
+      const line = document.getElementById("vitsJobLine");
+      if (!(await vitsSaveCfg())) { return; }
+      line.textContent = "合成中…（首次加载模型约 2 秒）";
+      const data = await vitsPost("/api/vits/tts", {});
+      if (!data) { line.textContent = "请求失败"; return; }
+      vitsShowJob(data.job);
+      if (data.ok) { toast("✅ " + (data.message || "合成完成")); await loadVits(); }
+      else { toast("❌ " + (data.message || "合成失败")); }
+    }
+
+    async function vitsRunVc() {
+      const line = document.getElementById("vitsVcLine");
+      if (!(await vitsSaveCfg())) { return; }
+      line.textContent = "换音色中…";
+      const data = await vitsPost("/api/vits/vc", {});
+      if (!data) { line.textContent = "请求失败"; return; }
+      if (data.ok) {
+        line.textContent = "✅ " + (data.message || "完成");
+        toast("✅ " + (data.message || "换音色完成"));
+        await loadVits();
+      } else {
+        line.textContent = "❌ " + (data.message || "失败");
+        toast("❌ " + (data.message || "失败"));
+      }
+    }
+
+    async function vitsStopRun() {
+      const data = await vitsPost("/api/vits/stop", {});
+      if (data && data.ok) { toast("✅ " + (data.message || "引擎已停止")); await loadVits(); }
+    }
+
+    function startVitsPoller() {
+      if (vitsTimer) { return; }
+      vitsTimer = setInterval(async () => {
+        if (genId !== "vits") { return; }
+        try {
+          const data = await fetch("/api/vits/live", { cache: "no-store" }).then(r => r.json());
+          const engine = data.engine || {};
+          const line = document.getElementById("vitsEngineLine");
+          if (line) {
+            line.textContent = engine.state === "ready"
+              ? ("引擎就绪 · " + (engine.model || "未加载模型") + (engine.device ? (" · " + engine.device) : ""))
+              : ((engine.state || "stopped") + (engine.message ? (" · " + engine.message) : ""));
+          }
+          vitsShowJob(data.job);
+        } catch (e) { /* 轮询失败不打扰 */ }
+      }, 2000);
+    }
+
+    document.getElementById("vitsReload").addEventListener("click", loadVits);
+    document.getElementById("vitsSave").addEventListener("click", async () => { if (await vitsSaveCfg()) { toast("✅ 参数已保存"); } });
+    document.getElementById("vitsSavePaths").addEventListener("click", vitsSavePaths);
+    document.getElementById("vitsClean").addEventListener("click", vitsCleanPreview);
+    document.getElementById("vitsTtsRun").addEventListener("click", vitsRunTts);
+    document.getElementById("vitsVcRun").addEventListener("click", vitsRunVc);
+    document.getElementById("vitsStop").addEventListener("click", vitsStopRun);
+    document.getElementById("vitsOpenOut").addEventListener("click", () => vitsPost("/api/vits/open-out", {}));
+    document.getElementById("vitsModel").addEventListener("change", async () => {
+      await vitsSaveCfg();
+      const data = await vitsPost("/api/vits/load?model=" + encodeURIComponent((document.getElementById("vitsModel") || {}).value || ""), {});
+      if (data && data.ok) { toast("✅ " + (data.message || "模型已加载")); }
+      else if (data) { toast("❌ " + (data.message || "加载失败")); }
+      await loadVits();
+    });
+    for (const tab of document.querySelectorAll("#genPanelVits .sub-tab")) {
+      tab.addEventListener("click", () => setVitsView(tab.dataset.vitsView));
+    }
 
     // Qwen3-Omni 转写——输入 / 提示词 / 参数 / 产物
     for (const tab of document.querySelectorAll("#genPanelOmni .sub-tab")) {

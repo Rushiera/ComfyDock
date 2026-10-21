@@ -1,0 +1,793 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace ComfyDock.Vits;
+
+/// <summary>
+/// 本地生成（VITS · MoeGoe 血统）的持久化配置——合成参数 + 换音色参数 + 这一路要用的路径
+/// （落盘 <c>data\vits-config.json</c>）。
+/// </summary>
+public sealed class VitsConfig
+{
+    /// <summary>解释器（默认 ComfyUI 的 python_embeded）。</summary>
+    public string PythonPath { get; set; } = "";
+
+    /// <summary>worker 脚本（随包 runtime\vits\vits_worker.py）。</summary>
+    public string ScriptPath { get; set; } = "";
+
+    /// <summary>模型根目录（ComfyUI\models\VITS）。</summary>
+    public string ModelsRoot { get; set; } = "";
+
+    /// <summary>推理设备（auto / cuda / cpu）。</summary>
+    public string Device { get; set; } = "auto";
+
+    /// <summary>当前选中的模型名。</summary>
+    public string Model { get; set; } = "";
+
+    /// <summary>语音合成的文本。</summary>
+    public string Text { get; set; } = "こんにちは、世界。";
+
+    /// <summary>说话人索引（合成用）。</summary>
+    public int Sid { get; set; }
+
+    /// <summary>语速（length_scale，越大越慢）。</summary>
+    public double LengthScale { get; set; } = 1.0;
+
+    /// <summary>音色噪声（noise_scale）。</summary>
+    public double NoiseScale { get; set; } = 0.667;
+
+    /// <summary>时长噪声（noise_scale_w）。</summary>
+    public double NoiseScaleW { get; set; } = 0.8;
+
+    /// <summary>文本已是音素串（符号输入）——跳过后端 cleaners。</summary>
+    public bool Cleaned { get; set; }
+
+    /// <summary>语音转换的输入音频。</summary>
+    public string VcAudio { get; set; } = "";
+
+    /// <summary>语音转换的原说话人索引。</summary>
+    public int VcSrc { get; set; }
+
+    /// <summary>语音转换的目标说话人索引。</summary>
+    public int VcDst { get; set; } = 1;
+}
+
+/// <summary>一个 VITS 模型（面板下拉用）——.pth 与同名 .json 成对才算可用。</summary>
+public sealed class VitsModelItem
+{
+    /// <summary>分组（模型根下的一层子目录）。</summary>
+    public string Group { get; set; } = "";
+
+    /// <summary>模型名（文件名去后缀）。</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>权重路径。</summary>
+    public string Pth { get; set; } = "";
+
+    /// <summary>config 路径（空 = 缺）。</summary>
+    public string Config { get; set; } = "";
+
+    /// <summary>说话人数。</summary>
+    public int Speakers { get; set; }
+
+    /// <summary>原生采样率。</summary>
+    public int SamplingRate { get; set; }
+
+    /// <summary>是否可用（config 在位 + 解析成功）。</summary>
+    public bool Ok { get; set; }
+
+    /// <summary>权重体积（MB）。</summary>
+    public double SizeMb { get; set; }
+}
+
+/// <summary>一个说话人（面板下拉用）。</summary>
+public sealed class VitsSpeakerItem
+{
+    /// <summary>索引。</summary>
+    public int Index { get; set; }
+
+    /// <summary>名字（模型 config 里的原文）。</summary>
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// 一次合成 / 换音色的任务状态（面板轮询它）。
+/// </summary>
+public sealed class VitsJobItem
+{
+    /// <summary>任务 id。</summary>
+    public string Id { get; set; } = "";
+
+    /// <summary>种类：tts / vc。</summary>
+    public string Kind { get; set; } = "";
+
+    /// <summary>状态：idle / running / done / error。</summary>
+    public string Status { get; set; } = "idle";
+
+    /// <summary>产物文件名。</summary>
+    public string File { get; set; } = "";
+
+    /// <summary>音频秒数。</summary>
+    public double AudioSeconds { get; set; }
+
+    /// <summary>喂进模型的 token 数（合成链）。</summary>
+    public int Tokens { get; set; }
+
+    /// <summary>耗时毫秒。</summary>
+    public long Ms { get; set; }
+
+    /// <summary>说明 / 失败原因。</summary>
+    public string Message { get; set; } = "";
+
+    /// <summary>完成时刻。</summary>
+    public string At { get; set; } = "";
+}
+
+/// <summary>
+/// 本地生成板块（VITS · MoeGoe 血统）的服务面——模型清单 + 配置 + 常驻引擎投递 + 产物清单。
+/// <para>与 IrodoriTTS / RVC 同一形态：不启 ComfyUI 服务、不开端口，解释器 = ComfyUI 的 python_embeded。</para>
+/// </summary>
+public sealed class VitsService
+{
+    /// <summary>配置落盘路径。</summary>
+    private readonly string _configPath;
+
+    /// <summary>产物落点目录。</summary>
+    private readonly string _outDir;
+
+    /// <summary>状态锁。</summary>
+    private readonly object _gate = new object();
+
+    /// <summary>常驻引擎。</summary>
+    private readonly VitsEngine _engine = new VitsEngine();
+
+    /// <summary>当前配置。</summary>
+    private VitsConfig _config;
+
+    /// <summary>当前任务状态。</summary>
+    private VitsJobItem _job = new VitsJobItem();
+
+    /// <summary>以选项构造。</summary>
+    /// <param name="defaults">默认配置。</param>
+    /// <param name="dataDir">数据目录。</param>
+    /// <param name="outDir">产物目录（空 = 数据目录同级 out\vits）。</param>
+    public VitsService(VitsConfig defaults, string dataDir, string outDir)
+    {
+        _configPath = Path.Combine(dataDir, "vits-config.json");
+        _outDir = string.IsNullOrWhiteSpace(outDir)
+            ? Path.Combine(AppContext.BaseDirectory, "out", "vits")
+            : outDir;
+        _config = LoadConfig(defaults);
+        ApplyEnginePaths();
+    }
+
+    /// <summary>产物落点目录。</summary>
+    public string OutDir => _outDir;
+
+    /// <summary>常驻引擎状态（面板显示这一路的死活）。</summary>
+    public VitsEngineState Engine => _engine.State;
+
+    /// <summary>当前任务状态（拷贝，防外部改）。</summary>
+    /// <returns>任务快照。</returns>
+    public VitsJobItem Job()
+    {
+        lock (_gate)
+        {
+            return new VitsJobItem
+            {
+                Id = _job.Id,
+                Kind = _job.Kind,
+                Status = _job.Status,
+                File = _job.File,
+                AudioSeconds = _job.AudioSeconds,
+                Tokens = _job.Tokens,
+                Ms = _job.Ms,
+                Message = _job.Message,
+                At = _job.At,
+            };
+        }
+    }
+
+    /// <summary>面板快照——配置 + 引擎 + 模型清单 + 当前模型说话人 + 产物。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>快照对象。</returns>
+    public async Task<object> SnapshotAsync(CancellationToken ct)
+    {
+        await Task.CompletedTask.ConfigureAwait(false);
+
+        VitsConfig cfg;
+        lock (_gate)
+        {
+            cfg = CloneConfig(_config);
+        }
+
+        List<VitsModelItem> models = ListModels();
+        List<VitsSpeakerItem> speakers = cfg.Model.Length > 0 ? SpeakersOf(cfg.Model) : new List<VitsSpeakerItem>();
+        List<string> outputs = ListOutputs();
+
+        return new
+        {
+            config = cfg,
+            engine = _engine.State,
+            job = Job(),
+            models,
+            speakers,
+            outputs,
+            outDir = _outDir,
+            scriptOk = cfg.ScriptPath.Length > 0 && File.Exists(cfg.ScriptPath),
+            pythonOk = cfg.PythonPath.Length > 0 && File.Exists(cfg.PythonPath),
+            modelsRootOk = cfg.ModelsRoot.Length > 0 && Directory.Exists(cfg.ModelsRoot),
+        };
+    }
+
+    /// <summary>改配置（传进来的非空字符串 / 非零数值覆盖，其余不动）。</summary>
+    /// <param name="next">新配置。</param>
+    /// <returns>落盘后的配置。</returns>
+    public VitsConfig UpdateConfig(VitsConfig next)
+    {
+        lock (_gate)
+        {
+            if (!string.IsNullOrWhiteSpace(next.PythonPath))
+            {
+                _config.PythonPath = next.PythonPath.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(next.ScriptPath))
+            {
+                _config.ScriptPath = next.ScriptPath.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(next.ModelsRoot))
+            {
+                _config.ModelsRoot = next.ModelsRoot.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(next.Device))
+            {
+                _config.Device = next.Device.Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(next.Model))
+            {
+                _config.Model = next.Model.Trim();
+            }
+
+            if (next.Text is not null)
+            {
+                _config.Text = next.Text;
+            }
+
+            if (next.VcAudio is not null)
+            {
+                _config.VcAudio = next.VcAudio.Trim();
+            }
+
+            _config.Sid = Math.Max(0, next.Sid);
+            _config.VcSrc = Math.Max(0, next.VcSrc);
+            _config.VcDst = Math.Max(0, next.VcDst);
+            _config.LengthScale = Clamp(next.LengthScale <= 0 ? 1.0 : next.LengthScale, 0.2, 3.0);
+            _config.NoiseScale = Clamp(next.NoiseScale <= 0 ? 0.667 : next.NoiseScale, 0, 2.0);
+            _config.NoiseScaleW = Clamp(next.NoiseScaleW <= 0 ? 0.8 : next.NoiseScaleW, 0, 2.0);
+            _config.Cleaned = next.Cleaned;
+
+            SaveConfig();
+            ApplyEnginePaths();
+            return CloneConfig(_config);
+        }
+    }
+
+    /// <summary>加载模型（切模型时旧模型被换掉）。</summary>
+    /// <param name="model">模型名（空 = 用配置里那个）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 说明)。</returns>
+    public async Task<(bool Ok, string Message)> LoadAsync(string model, CancellationToken ct)
+    {
+        string name = model;
+        lock (_gate)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                name = _config.Model;
+            }
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return (false, "还没选模型");
+            }
+
+            _config.Model = name;
+            SaveConfig();
+            ApplyEnginePaths();
+        }
+
+        (bool ok, string message, JsonNode? node) = await _engine.LoadAsync(name, ct).ConfigureAwait(false);
+        if (ok && node is not null)
+        {
+            int count = (int)(node["n_speakers"]?.GetValue<double>() ?? 0);
+            lock (_gate)
+            {
+                if (_config.Sid >= count)
+                {
+                    _config.Sid = 0;
+                }
+
+                if (_config.VcDst >= count)
+                {
+                    _config.VcDst = count > 1 ? 1 : 0;
+                }
+
+                if (_config.VcSrc >= count)
+                {
+                    _config.VcSrc = 0;
+                }
+            }
+        }
+
+        return (ok, message);
+    }
+
+    /// <summary>清理预览（文本 → 音素串）。</summary>
+    /// <param name="text">文本（空 = 用配置里那段）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(清理结果, 错误说明)。</returns>
+    public async Task<(string Cleaned, string Error)> CleanAsync(string text, CancellationToken ct)
+    {
+        string model;
+        string body;
+        lock (_gate)
+        {
+            model = _config.Model;
+            body = string.IsNullOrEmpty(text) ? _config.Text : text;
+        }
+
+        if (model.Length == 0)
+        {
+            return ("", "还没选模型");
+        }
+
+        (bool ok, string message) = await LoadAsync(model, ct).ConfigureAwait(false);
+        if (!ok)
+        {
+            return ("", message);
+        }
+
+        return await _engine.CleanAsync(body, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>按当前配置合成一句（前台等回执——单句通常 1~3 秒）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 说明)。</returns>
+    public async Task<(bool Ok, string Message)> TtsAsync(CancellationToken ct)
+    {
+        VitsConfig cfg;
+        lock (_gate)
+        {
+            cfg = CloneConfig(_config);
+        }
+
+        if (cfg.Model.Length == 0)
+        {
+            return (false, "还没选模型");
+        }
+
+        if (cfg.Cleaned && cfg.Text.Trim().Length == 0)
+        {
+            return (false, "符号输入为空——打开符号输入时要自己填音素串");
+        }
+
+        (bool loaded, string loadMessage) = await LoadAsync(cfg.Model, ct).ConfigureAwait(false);
+        if (!loaded)
+        {
+            return (false, loadMessage);
+        }
+
+        string name = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Sanitize(cfg.Model) + "_tts.wav";
+        string path = Path.Combine(_outDir, name);
+        Directory.CreateDirectory(_outDir);
+
+        SetJob("tts", "running", "", "合成中…");
+        long t0 = Environment.TickCount64;
+        (bool ok, string file, double seconds, int tokens, string message) = await _engine
+            .TtsAsync(cfg.Text, cfg.Sid, cfg.LengthScale, cfg.NoiseScale, cfg.NoiseScaleW, cfg.Cleaned, path, ct)
+            .ConfigureAwait(false);
+        long ms = Environment.TickCount64 - t0;
+
+        if (!ok)
+        {
+            SetJob("tts", "error", "", message);
+            return (false, message);
+        }
+
+        SetJob("tts", "done", Path.GetFileName(file), message, seconds, tokens, ms);
+        return (true, message + "（" + (ms / 1000.0).ToString("F1") + " 秒）");
+    }
+
+    /// <summary>按当前配置做一次语音转换（原说话人 → 目标说话人）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否成功, 说明)。</returns>
+    public async Task<(bool Ok, string Message)> VcAsync(CancellationToken ct)
+    {
+        VitsConfig cfg;
+        lock (_gate)
+        {
+            cfg = CloneConfig(_config);
+        }
+
+        if (cfg.Model.Length == 0)
+        {
+            return (false, "还没选模型");
+        }
+
+        if (cfg.VcAudio.Length == 0 || !File.Exists(cfg.VcAudio))
+        {
+            return (false, "输入音频不存在：" + cfg.VcAudio);
+        }
+
+        (bool loaded, string loadMessage) = await LoadAsync(cfg.Model, ct).ConfigureAwait(false);
+        if (!loaded)
+        {
+            return (false, loadMessage);
+        }
+
+        string name = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Sanitize(cfg.Model)
+            + "_vc" + cfg.VcSrc + "to" + cfg.VcDst + ".wav";
+        string path = Path.Combine(_outDir, name);
+        Directory.CreateDirectory(_outDir);
+
+        SetJob("vc", "running", "", "换音色中…");
+        long t0 = Environment.TickCount64;
+        (bool ok, string file, double seconds, int tokens, string message) = await _engine
+            .VcAsync(cfg.VcAudio, cfg.VcSrc, cfg.VcDst, path, ct)
+            .ConfigureAwait(false);
+        long ms = Environment.TickCount64 - t0;
+
+        if (!ok)
+        {
+            SetJob("vc", "error", "", message);
+            return (false, message);
+        }
+
+        SetJob("vc", "done", Path.GetFileName(file), message, seconds, 0, ms);
+        return (true, message + "（" + (ms / 1000.0).ToString("F1") + " 秒）");
+    }
+
+    /// <summary>停掉常驻引擎（把显存还回去）。</summary>
+    /// <returns>说明。</returns>
+    public string Stop()
+    {
+        _engine.Stop();
+        return "引擎已停止";
+    }
+
+    /// <summary>产物目录里的音频清单（新→旧）。</summary>
+    /// <returns>文件名清单。</returns>
+    public List<string> ListOutputs()
+    {
+        var list = new List<string>();
+        if (!Directory.Exists(_outDir))
+        {
+            return list;
+        }
+
+        try
+        {
+            var info = new DirectoryInfo(_outDir);
+            foreach (FileInfo file in info.GetFiles("*.wav").OrderByDescending(f => f.LastWriteTimeUtc).Take(20))
+            {
+                list.Add(file.Name);
+            }
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            return list;
+        }
+
+        return list;
+    }
+
+    /// <summary>产物音频的完整路径（面板播放用）。</summary>
+    /// <param name="name">文件名。</param>
+    /// <returns>完整路径（空 = 非法名 / 不存在）。</returns>
+    public string OutputPath(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.IndexOfAny(new[] { '/', '\\' }) >= 0)
+        {
+            return "";
+        }
+
+        string path = Path.Combine(_outDir, name);
+        return File.Exists(path) ? path : "";
+    }
+
+    /// <summary>模型清单（模型根下一层分组）。</summary>
+    /// <returns>模型条目。</returns>
+    public List<VitsModelItem> ListModels()
+    {
+        var list = new List<VitsModelItem>();
+        string root;
+        lock (_gate)
+        {
+            root = _config.ModelsRoot;
+        }
+
+        if (root.Length == 0 || !Directory.Exists(root))
+        {
+            return list;
+        }
+
+        try
+        {
+            foreach (string groupDir in Directory.GetDirectories(root))
+            {
+                string group = Path.GetFileName(groupDir);
+                foreach (string pth in Directory.GetFiles(groupDir, "*.pth"))
+                {
+                    string name = Path.GetFileNameWithoutExtension(pth);
+                    string cfg = Path.Combine(groupDir, name + ".json");
+                    var item = new VitsModelItem
+                    {
+                        Group = group,
+                        Name = name,
+                        Pth = pth,
+                        Config = File.Exists(cfg) ? cfg : "",
+                        SizeMb = Math.Round(new FileInfo(pth).Length / 1048576.0, 1),
+                    };
+
+                    if (item.Config.Length > 0)
+                    {
+                        (int speakers, int rate, bool ok) = ReadModelMeta(cfg);
+                        item.Speakers = speakers;
+                        item.SamplingRate = rate;
+                        item.Ok = ok;
+                    }
+
+                    list.Add(item);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            return list;
+        }
+
+        return list;
+    }
+
+    /// <summary>某个模型的说话人清单（读 config 的 speakers 数组）。</summary>
+    /// <param name="model">模型名。</param>
+    /// <returns>说话人清单。</returns>
+    public List<VitsSpeakerItem> SpeakersOf(string model)
+    {
+        var list = new List<VitsSpeakerItem>();
+        VitsModelItem? hit = ListModels().FirstOrDefault(m => m.Name == model && m.Ok);
+        if (hit is null || hit.Config.Length == 0)
+        {
+            return list;
+        }
+
+        try
+        {
+            string text = File.ReadAllText(hit.Config, Encoding.UTF8);
+            JsonNode? node = JsonNode.Parse(text);
+            JsonArray? arr = node?["speakers"] as JsonArray;
+            if (arr is null)
+            {
+                return list;
+            }
+
+            int i = 0;
+            foreach (JsonNode? entry in arr)
+            {
+                list.Add(new VitsSpeakerItem { Index = i, Name = entry?.GetValue<string>() ?? ("spk" + i) });
+                i++;
+            }
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            return list;
+        }
+
+        return list;
+    }
+
+    /// <summary>把配置里的路径推给常驻引擎（参数没变就什么都不做）。</summary>
+    private void ApplyEnginePaths()
+    {
+        VitsConfig cfg;
+        lock (_gate)
+        {
+            cfg = CloneConfig(_config);
+        }
+
+        _engine.Prepare(cfg.PythonPath, cfg.ScriptPath, cfg.ModelsRoot, cfg.Device);
+    }
+
+    /// <summary>读模型 config 的元信息。</summary>
+    /// <param name="path">config 路径。</param>
+    /// <returns>(说话人数, 采样率, 是否解析成功)。</returns>
+    private static (int Speakers, int Rate, bool Ok) ReadModelMeta(string path)
+    {
+        try
+        {
+            string text = File.ReadAllText(path, Encoding.UTF8);
+            JsonNode? node = JsonNode.Parse(text);
+            JsonObject? data = node?["data"] as JsonObject;
+            int speakers = (int)(data?["n_speakers"]?.GetValue<double>() ?? 0);
+            int rate = (int)(data?["sampling_rate"]?.GetValue<double>() ?? 0);
+            return (speakers, rate, rate > 0);
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            return (0, 0, false);
+        }
+    }
+
+    /// <summary>更新任务状态。</summary>
+    /// <param name="kind">种类。</param>
+    /// <param name="status">状态。</param>
+    /// <param name="file">产物。</param>
+    /// <param name="message">说明。</param>
+    /// <param name="seconds">音频秒数。</param>
+    /// <param name="tokens">token 数。</param>
+    /// <param name="ms">耗时。</param>
+    private void SetJob(string kind, string status, string file, string message,
+        double seconds = 0, int tokens = 0, long ms = 0)
+    {
+        lock (_gate)
+        {
+            _job = new VitsJobItem
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Kind = kind,
+                Status = status,
+                File = file,
+                AudioSeconds = seconds,
+                Tokens = tokens,
+                Ms = ms,
+                Message = message,
+                At = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+            };
+        }
+    }
+
+    /// <summary>文件名里的安全化（去非法字符）。</summary>
+    /// <param name="name">原名。</param>
+    /// <returns>安全名。</returns>
+    private static string Sanitize(string name)
+    {
+        char[] bad = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(name.Length);
+        foreach (char c in name)
+        {
+            sb.Append(Array.IndexOf(bad, c) >= 0 ? '_' : c);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>读配置（坏文件回落默认值，不阻断启动）。</summary>
+    /// <param name="defaults">默认值。</param>
+    /// <returns>配置。</returns>
+    private VitsConfig LoadConfig(VitsConfig defaults)
+    {
+        if (!File.Exists(_configPath))
+        {
+            return defaults;
+        }
+
+        try
+        {
+            string text = File.ReadAllText(_configPath, Encoding.UTF8);
+            VitsConfig? loaded = JsonSerializer.Deserialize<VitsConfig>(text, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+            });
+
+            if (loaded is null)
+            {
+                return defaults;
+            }
+
+            // 路径类字段为空时回落默认值（面板从没改过就沿用选项）
+            if (string.IsNullOrWhiteSpace(loaded.PythonPath))
+            {
+                loaded.PythonPath = defaults.PythonPath;
+            }
+
+            if (string.IsNullOrWhiteSpace(loaded.ScriptPath))
+            {
+                loaded.ScriptPath = defaults.ScriptPath;
+            }
+
+            if (string.IsNullOrWhiteSpace(loaded.ModelsRoot))
+            {
+                loaded.ModelsRoot = defaults.ModelsRoot;
+            }
+
+            if (string.IsNullOrWhiteSpace(loaded.Device))
+            {
+                loaded.Device = defaults.Device;
+            }
+
+            if (string.IsNullOrWhiteSpace(loaded.Model))
+            {
+                loaded.Model = defaults.Model;
+            }
+
+            return loaded;
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            return defaults;
+        }
+    }
+
+    /// <summary>落盘配置（原子替换）。</summary>
+    private void SaveConfig()
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(_configPath) ?? ".";
+            Directory.CreateDirectory(dir);
+            string tmp = _configPath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(_config, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+            }), new UTF8Encoding(false));
+            File.Move(tmp, _configPath, true);
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            // 配置写不进去不该阻断推理——但要具名出声（失败必须可见）
+            Console.Error.WriteLine("[vits] 配置写盘失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>配置拷贝。</summary>
+    /// <param name="src">源。</param>
+    /// <returns>拷贝。</returns>
+    private static VitsConfig CloneConfig(VitsConfig src)
+    {
+        return new VitsConfig
+        {
+            PythonPath = src.PythonPath,
+            ScriptPath = src.ScriptPath,
+            ModelsRoot = src.ModelsRoot,
+            Device = src.Device,
+            Model = src.Model,
+            Text = src.Text,
+            Sid = src.Sid,
+            LengthScale = src.LengthScale,
+            NoiseScale = src.NoiseScale,
+            NoiseScaleW = src.NoiseScaleW,
+            Cleaned = src.Cleaned,
+            VcAudio = src.VcAudio,
+            VcSrc = src.VcSrc,
+            VcDst = src.VcDst,
+        };
+    }
+
+    /// <summary>夹取数值范围。</summary>
+    /// <param name="value">值。</param>
+    /// <param name="min">下界。</param>
+    /// <param name="max">上界。</param>
+    /// <returns>夹取结果。</returns>
+    private static double Clamp(double value, double min, double max)
+    {
+        return value < min ? min : (value > max ? max : value);
+    }
+}
+
+/// <summary>面板发来的纯文本请求（清理预览用）。</summary>
+public sealed class VitsTextRequest
+{
+    /// <summary>要清理的文本。</summary>
+    public string? Text { get; set; }
+}

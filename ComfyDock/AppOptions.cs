@@ -90,6 +90,27 @@ public sealed class AppOptions
     /// <summary>RVC 实时自检 CLI——输出设备索引（整数；auto = 系统默认输出）；空 = 不起该分支。</summary>
     public string RvcRtSelfTest { get; set; } = "";
 
+    /// <summary>本地生成（VITS · MoeGoe 血统）——解释器：同样直接用本机 ComfyUI 的 python_embeded。</summary>
+    public string VitsPython { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\python_embeded\python.exe";
+
+    /// <summary>本地生成（VITS）——worker 脚本（随包 runtime\vits\vits_worker.py）。</summary>
+    public string VitsScript { get; set; } = @"D:\Mau\WorkSpace\ComfyDock\runtime\vits\vits_worker.py";
+
+    /// <summary>本地生成（VITS）——模型根目录（一层分组后 &lt;名字&gt;.pth + &lt;名字&gt;.json）。</summary>
+    public string VitsModels { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\models\VITS";
+
+    /// <summary>本地生成（VITS）产物落点目录（默认 exe 同级 out\vits）。</summary>
+    public string VitsOutDir { get; set; } = "";
+
+    /// <summary>VITS 自检 CLI——给一个模型名，合成一句（可选一次换音色）后打印结果并退出；空 = 不起该分支。</summary>
+    public string VitsSelfTest { get; set; } = "";
+
+    /// <summary>VITS 自检 CLI——换音色的输入音频（空 = 不做 VC）。</summary>
+    public string VitsVcAudio { get; set; } = "";
+
+    /// <summary>VITS 自检 CLI——合成的文本（空 = 默认一句日语）。</summary>
+    public string VitsText { get; set; } = "";
+
     /// <summary>本地生成（Qwen3-Omni 转写）——引擎：llama.cpp 的 llama-mtmd-cli（自持，随 ComfyUI 一起放）。</summary>
     public string OmniCli { get; set; } = @"D:\done\ComfyUI_Wan22_Ultra_GGUFv2.33\ComfyUI\tools\llama-omni\bin\llama-mtmd-cli.exe";
 
@@ -243,6 +264,27 @@ public sealed class AppOptions
                     break;
                 case "--rvc-rt-selftest":
                     options.RvcRtSelfTest = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-python":
+                    options.VitsPython = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-script":
+                    options.VitsScript = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-models":
+                    options.VitsModels = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-out":
+                    options.VitsOutDir = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-selftest":
+                    options.VitsSelfTest = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-text":
+                    options.VitsText = RequireValue(args, ref i, key);
+                    break;
+                case "--vits-vc-audio":
+                    options.VitsVcAudio = RequireValue(args, ref i, key);
                     break;
                 case "--omni-cli":
                     options.OmniCli = RequireValue(args, ref i, key);

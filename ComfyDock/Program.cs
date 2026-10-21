@@ -25,6 +25,7 @@ using ComfyDock.Shortcut;
 using ComfyDock.Store;
 using ComfyDock.Tagger;
 using ComfyDock.Tts;
+using ComfyDock.Vits;
 
 namespace ComfyDock;
 
@@ -118,6 +119,21 @@ public static class Program
                 options.RvcModels,
                 options.RvcModel,
                 options.RvcOutDir).ConfigureAwait(false);
+        }
+
+        // [段0e2] VITS 自检 CLI——起常驻 worker 合成一句（可选换一次音色）后打印结果并退出
+        if (options.VitsSelfTest.Length > 0)
+        {
+            return await VitsCli.RunAsync(
+                options.VitsSelfTest,
+                options.VitsPython,
+                options.VitsScript,
+                options.VitsModels,
+                options.VitsText,
+                options.VitsOutDir,
+                options.VitsVcAudio,
+                0,
+                1).ConfigureAwait(false);
         }
 
         if (options.OmniSelfTest.Length > 0)
@@ -231,12 +247,23 @@ public static class Program
             options.DataDir,
             options.OmniOutDir);
 
+        // [段3g] 本地生成（VITS · MoeGoe 血统）——语音合成 / 语音转换；模型住 ComfyUI\models\VITS，推理借 python_embeded
+        var vits = new VitsService(
+            new VitsConfig
+            {
+                PythonPath = options.VitsPython,
+                ScriptPath = options.VitsScript,
+                ModelsRoot = options.VitsModels,
+            },
+            options.DataDir,
+            options.VitsOutDir);
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:" + options.Port);
 
         WebApplication app = builder.Build();
-        MapEndpoints(app, options, store, service, registry, shell, hub, gateway, local, rh, moss, tts, tagger, rvc, omni);
+        MapEndpoints(app, options, store, service, registry, shell, hub, gateway, local, rh, moss, tts, tagger, rvc, omni, vits);
 
         await app.StartAsync().ConfigureAwait(false);
 
@@ -270,6 +297,7 @@ public static class Program
     /// <param name="tagger">本地生成（WD Tagger 打标）服务。</param>
     /// <param name="rvc">本地生成（RVC 变声）服务。</param>
     /// <param name="omni">本地生成（Qwen3-Omni 转写）服务。</param>
+    /// <param name="vits">本地生成（VITS 语音合成 / 语音转换）服务。</param>
     private static void MapEndpoints(
         WebApplication app,
         AppOptions options,
@@ -285,7 +313,8 @@ public static class Program
         TtsService tts,
         TaggerService tagger,
         RvcService rvc,
-        OmniService omni)
+        OmniService omni,
+        VitsService vits)
     {
         string webRoot = Path.Combine(app.Environment.ContentRootPath, "Web", "wwwroot");
         if (!Directory.Exists(webRoot))
@@ -1146,6 +1175,92 @@ public static class Program
                     UseShellExecute = true,
                 });
                 return Results.Json(new { ok = true, path = tts.OutDir }, JsonOptions);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
+            {
+                return Results.Json(new { ok = false, error = ex.Message }, JsonOptions, statusCode: 500);
+            }
+        });
+
+        // 本地生成（VITS · MoeGoe 血统）——语音合成 / 语音转换：模型清单 / 加载 / 清理预览 / 合成 / 换音色 / 产物
+        app.MapGet("/api/vits", async (CancellationToken ct) =>
+        {
+            return Results.Json(await vits.SnapshotAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapGet("/api/vits/live", () =>
+        {
+            // 轻量轮询面——只回任务与引擎状态，不重扫磁盘
+            return Results.Json(new
+            {
+                job = vits.Job(),
+                engine = vits.Engine,
+            }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/config", (VitsConfig request) =>
+        {
+            if (request is null)
+            {
+                return Results.Json(new { ok = false, error = "参数不完整" }, JsonOptions, statusCode: 400);
+            }
+
+            VitsConfig saved = vits.UpdateConfig(request);
+            return Results.Json(new { ok = true, config = saved }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/load", async (string? model, CancellationToken ct) =>
+        {
+            (bool ok, string message) = await vits.LoadAsync(model ?? "", ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, engine = vits.Engine }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/clean", async (VitsTextRequest? request, CancellationToken ct) =>
+        {
+            (string cleaned, string error) = await vits.CleanAsync(request?.Text ?? "", ct).ConfigureAwait(false);
+            return Results.Json(new { ok = error.Length == 0, cleaned, error, engine = vits.Engine }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/tts", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await vits.TtsAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = vits.Job(), engine = vits.Engine }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/vc", async (CancellationToken ct) =>
+        {
+            (bool ok, string message) = await vits.VcAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok, message, job = vits.Job(), engine = vits.Engine }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/stop", () =>
+        {
+            string message = vits.Stop();
+            return Results.Json(new { ok = true, message, engine = vits.Engine, job = vits.Job() }, JsonOptions);
+        });
+
+        app.MapGet("/api/vits/audio", (string? name) =>
+        {
+            string path = vits.OutputPath(name ?? "");
+            if (path.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(path, "audio/wav");
+        });
+
+        app.MapPost("/api/vits/open-out", () =>
+        {
+            try
+            {
+                Directory.CreateDirectory(vits.OutDir);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = vits.OutDir,
+                    UseShellExecute = true,
+                });
+                return Results.Json(new { ok = true, path = vits.OutDir }, JsonOptions);
             }
             catch (Exception ex) when (ex is IOException || ex is System.ComponentModel.Win32Exception)
             {
