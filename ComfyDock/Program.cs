@@ -1193,11 +1193,12 @@ public static class Program
 
         app.MapGet("/api/vits/live", () =>
         {
-            // 轻量轮询面——只回任务与引擎状态，不重扫磁盘
+            // 轻量轮询面——只回任务 / 引擎 / F0 名册状态，不重扫磁盘
             return Results.Json(new
             {
                 job = vits.Job(),
                 engine = vits.Engine,
+                f0 = vits.F0State(),
             }, JsonOptions);
         });
 
@@ -1227,6 +1228,21 @@ public static class Program
             {
                 (bool _, string note) = await rvc.RealtimeRefreshBridgeAsync(ct).ConfigureAwait(false);
                 bridgeMessage = note;
+                // 名册缺失就在后台补量一份（已新鲜时立刻返回）——桥接的自动挑源 / 自动变调靠它
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await vits.EnsureF0ProfileAsync(model ?? "", false, CancellationToken.None)
+                            .ConfigureAwait(false);
+                        await rvc.RealtimeRefreshBridgeAsync(CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is InvalidOperationException)
+                    {
+                        // 后台补量失败不抛到请求上——状态在 /api/vits/f0 里看得见
+                        Console.Error.WriteLine("F0 名册后台补量失败：" + ex.Message);
+                    }
+                });
             }
 
             return Results.Json(new { ok, message, bridgeMessage, engine = vits.Engine }, JsonOptions);
@@ -1262,6 +1278,33 @@ public static class Program
         {
             string message = vits.Stop();
             return Results.Json(new { ok = true, message, engine = vits.Engine, job = vits.Job() }, JsonOptions);
+        });
+
+        // F0 名册——桥接「自动挑原说话人 / 自动变调」的数据源：查状态 / 现量一份
+        app.MapGet("/api/vits/f0", () =>
+        {
+            return Results.Json(new { ok = true, f0 = vits.F0State() }, JsonOptions);
+        });
+
+        app.MapPost("/api/vits/f0", async (string? model, bool? force, CancellationToken ct) =>
+        {
+            (bool ok, string message) = await vits
+                .EnsureF0ProfileAsync(model ?? "", force ?? false, ct).ConfigureAwait(false);
+            string bridgeMessage = "";
+            if (ok)
+            {
+                (bool _, string note) = await rvc.RealtimeRefreshBridgeAsync(ct).ConfigureAwait(false);
+                bridgeMessage = note;
+            }
+
+            return Results.Json(new
+            {
+                ok,
+                message,
+                bridgeMessage,
+                f0 = vits.F0State(),
+                engine = vits.Engine,
+            }, JsonOptions);
         });
 
         app.MapGet("/api/vits/audio", (string? name) =>

@@ -59,6 +59,48 @@ public sealed class VitsConfig
 
     /// <summary>语音转换的目标说话人索引。</summary>
     public int VcDst { get; set; } = 1;
+
+    /// <summary>桥接时自动挑原说话人（按 F0 名册挑与输入最接近的；手动 VcSrc 仍在、作为兜底）。</summary>
+    public bool VcAutoSrc { get; set; } = true;
+
+    /// <summary>桥接时自动调 RVC 变调（让 RVC 输出基频落到目标说话人的自然音域）。</summary>
+    public bool VcAutoF0 { get; set; } = true;
+}
+
+/// <summary>
+/// 一个 VITS 模型的「说话人自然基频名册」——逐个说话人合成一句探针文本、量中位 F0。
+/// <para>桥接的自动挑源说话人 / 自动变调都读它；落盘 <c>data\vits-f0-profile.json</c>。</para>
+/// </summary>
+public sealed class VitsF0Profile
+{
+    /// <summary>模型名。</summary>
+    public string Model { get; set; } = "";
+
+    /// <summary>权重文件的修改时刻（ticks）——变了就要重量。</summary>
+    public long PthTicks { get; set; }
+
+    /// <summary>权重文件字节数——与 ticks 一起构成「这份名册还新鲜吗」的判据。</summary>
+    public long PthBytes { get; set; }
+
+    /// <summary>量的时候用的探针文本（换了文本结果会差一点，记下来便于对账）。</summary>
+    public string ProbeText { get; set; } = "";
+
+    /// <summary>说话人索引（十进制字符串）→ 中位 F0（Hz）——键用字符串，落盘口径不挑序列化器。</summary>
+    public Dictionary<string, double> F0 { get; set; } = new Dictionary<string, double>();
+
+    /// <summary>取某个说话人的 F0（没量到给 0）。</summary>
+    /// <param name="sid">说话人索引。</param>
+    /// <returns>中位 F0（Hz）；缺失 0。</returns>
+    public double F0Of(int sid)
+    {
+        return F0.TryGetValue(sid.ToString(), out double v) ? v : 0;
+    }
+
+    /// <summary>量好/更新时间。</summary>
+    public string At { get; set; } = "";
+
+    /// <summary>成功条数。</summary>
+    public int Count { get; set; }
 }
 
 /// <summary>一个 VITS 模型（面板下拉用）——.pth 与同名 .json 成对才算可用。</summary>
@@ -194,6 +236,33 @@ public sealed class VitsService
     /// <summary>产物落点目录。</summary>
     private readonly string _outDir;
 
+    /// <summary>数据目录（F0 名册与配置都落这里）。</summary>
+    private readonly string _dataDir;
+
+    /// <summary>F0 名册缓存文件路径。</summary>
+    private readonly string _f0ProfilePath;
+
+    /// <summary>F0 名册后台测量状态：idle / running / ready / error。</summary>
+    private string _f0State = "idle";
+
+    /// <summary>F0 名册状态说明（面板照它出声）。</summary>
+    private string _f0Message = "";
+
+    /// <summary>F0 名册已量条数。</summary>
+    private int _f0Done;
+
+    /// <summary>F0 名册总条数。</summary>
+    private int _f0Total;
+
+    /// <summary>正在量哪个模型的名册（空 = 没在跑）。</summary>
+    private string _f0Running = "";
+
+    /// <summary>F0 名册缓存（模型名 → 名册）。</summary>
+    private Dictionary<string, VitsF0Profile> _f0Cache = new Dictionary<string, VitsF0Profile>();
+
+    /// <summary>F0 名册测量期间用的探针文本（够多浊音帧，又不至于太慢）。</summary>
+    public const string F0ProbeText = "こんにちは、世界。今日はいい天気ですね。";
+
     /// <summary>状态锁。</summary>
     private readonly object _gate = new object();
 
@@ -212,11 +281,14 @@ public sealed class VitsService
     /// <param name="outDir">产物目录（空 = 数据目录同级 out\vits）。</param>
     public VitsService(VitsConfig defaults, string dataDir, string outDir)
     {
+        _dataDir = dataDir;
         _configPath = Path.Combine(dataDir, "vits-config.json");
+        _f0ProfilePath = Path.Combine(dataDir, "vits-f0-profile.json");
         _outDir = string.IsNullOrWhiteSpace(outDir)
             ? Path.Combine(AppContext.BaseDirectory, "out", "vits")
             : outDir;
         _config = LoadConfig(defaults);
+        LoadF0Cache();
         ApplyEnginePaths();
     }
 
@@ -249,7 +321,7 @@ public sealed class VitsService
             };
         }
     }
-    /// <summary>桥接用的 VITS 设置快照——模型 / 原说话人 / 目标说话人取自本页签当前配置（唯一真相源）。</summary>
+    /// <summary>桥接用的 VITS 设置快照——模型 / 说话人 / F0 名册取自本页签当前配置（唯一真相源）。</summary>
     /// <returns>设置快照（模型没选时 Model 为空，桥接侧不下发）。</returns>
     public RvcVitsBridgeSpec BridgeSpec()
     {
@@ -262,15 +334,231 @@ public sealed class VitsService
                 repo = Path.Combine(AppContext.BaseDirectory, "runtime", "vits");
             }
 
+            VitsF0Profile? prof = F0ProfileOfLocked(_config.Model);
+
             return new RvcVitsBridgeSpec
             {
                 Model = _config.Model,
                 Src = _config.VcSrc,
                 Dst = _config.VcDst,
+                SrcAuto = _config.VcAutoSrc,
+                F0Auto = _config.VcAutoF0,
+                DstF0 = prof is null ? 0 : prof.F0Of(_config.VcDst),
+                F0Profile = prof is null ? "" : _f0ProfilePath,
                 ModelsRoot = _config.ModelsRoot,
                 Repo = repo,
                 Device = _config.Device.Length == 0 ? "cuda" : _config.Device,
             };
+        }
+    }
+
+    /// <summary>F0 名册缓存文件路径（桥接侧按它读名册）。</summary>
+    public string F0ProfilePath => _f0ProfilePath;
+
+    /// <summary>读一份名册（模型名 → 名册；没有或权重已换则 null）。</summary>
+    /// <param name="model">模型名。</param>
+    /// <returns>名册或 null。</returns>
+    public VitsF0Profile? F0ProfileOf(string model)
+    {
+        lock (_gate)
+        {
+            return F0ProfileOfLocked(model);
+        }
+    }
+
+    /// <summary>F0 名册的当前状态（面板显示 + 桥接侧出声用）。</summary>
+    /// <returns>状态快照。</returns>
+    public object F0State()
+    {
+        lock (_gate)
+        {
+            VitsF0Profile? prof = F0ProfileOfLocked(_config.Model);
+            return new
+            {
+                state = _f0State,
+                message = _f0Message,
+                running = _f0Running,
+                done = _f0Done,
+                total = _f0Total,
+                model = _config.Model,
+                count = prof?.Count ?? 0,
+                at = prof?.At ?? "",
+                probeText = prof?.ProbeText ?? "",
+                path = _f0ProfilePath,
+            };
+        }
+    }
+
+    /// <summary>
+    /// 确保当前模型的 F0 名册在位——没有、或权重换过了就量一遍（逐条回调更新进度）。
+    /// <para>缺名册时桥接会退回「按 VITS 页签手动选的源说话人」，并在状态里出声，不静默。</para>
+    /// </summary>
+    /// <param name="model">模型名（空 = 用当前配置的模型）。</param>
+    /// <param name="force">为 true 时无条件重量。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(是否就绪, 人话)。</returns>
+    public async Task<(bool Ok, string Message)> EnsureF0ProfileAsync(string model, bool force, CancellationToken ct)
+    {
+        string name = string.IsNullOrWhiteSpace(model) ? _config.Model : model.Trim();
+        if (name.Length == 0)
+        {
+            return (false, "还没选模型——先去模型下拉里选一个");
+        }
+
+        VitsModelItem? item = ListModels().FirstOrDefault(m => m.Name == name);
+        if (item is null || !item.Ok)
+        {
+            return (false, "模型不在位或缺 config：" + name);
+        }
+
+        long ticks = 0;
+        long bytes = 0;
+        try
+        {
+            var fi = new FileInfo(item.Pth);
+            ticks = fi.LastWriteTimeUtc.Ticks;
+            bytes = fi.Length;
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            return (false, "读不到权重文件：" + ex.Message);
+        }
+
+        lock (_gate)
+        {
+            if (_f0Running.Length > 0)
+            {
+                return (false, "已经在量名册了：" + _f0Running);
+            }
+
+            VitsF0Profile? have = F0ProfileOfLocked(name);
+            bool fresh = have is not null && have.PthTicks == ticks && have.PthBytes == bytes
+                && have.Count > 0 && have.ProbeText == F0ProbeText;
+            if (fresh && !force)
+            {
+                _f0State = "ready";
+                _f0Message = "F0 名册在位：" + have!.Count + " 人（" + have.At + "）";
+                return (true, _f0Message);
+            }
+
+            _f0Running = name;
+            _f0State = "running";
+            _f0Done = 0;
+            _f0Total = Math.Max(1, item.Speakers);
+            _f0Message = "正在量 F0 名册（" + _f0Total + " 人）…";
+        }
+
+        (bool loaded, string loadMessage, _) = await _engine.LoadAsync(name, ct).ConfigureAwait(false);
+        if (!loaded)
+        {
+            lock (_gate)
+            {
+                _f0Running = "";
+                _f0State = "error";
+                _f0Message = "名册要靠引擎跑，但加载模型失败：" + loadMessage;
+            }
+
+            return (false, _f0Message);
+        }
+
+        (Dictionary<int, double> got, string error) = await _engine
+            .F0ProfileAsync(F0ProbeText, null, (sid, f0, done, total) =>
+            {
+                lock (_gate)
+                {
+                    _f0Done = done;
+                    if (total > 0)
+                    {
+                        _f0Total = total;
+                    }
+
+                    _f0Message = "正在量 F0 名册… " + _f0Done + "/" + _f0Total;
+                }
+            }, ct).ConfigureAwait(false);
+
+        lock (_gate)
+        {
+            _f0Running = "";
+            if (error.Length > 0 || got.Count == 0)
+            {
+                _f0State = "error";
+                _f0Message = "F0 名册没量成：" + (error.Length > 0 ? error : "一条都没测出来");
+                return (false, _f0Message);
+            }
+
+            var prof = new VitsF0Profile
+            {
+                Model = name,
+                PthTicks = ticks,
+                PthBytes = bytes,
+                ProbeText = F0ProbeText,
+                At = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                Count = got.Count,
+            };
+            foreach (KeyValuePair<int, double> kv in got)
+            {
+                prof.F0[kv.Key.ToString()] = Math.Round(kv.Value, 1);
+            }
+
+            _f0Cache[name] = prof;
+            SaveF0CacheLocked();
+            _f0State = "ready";
+            _f0Message = "F0 名册已就绪：" + prof.Count + " 人";
+            return (true, _f0Message);
+        }
+    }
+
+    /// <summary>读名册缓存（锁内调用）。</summary>
+    /// <param name="model">模型名。</param>
+    /// <returns>名册或 null。</returns>
+    private VitsF0Profile? F0ProfileOfLocked(string model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return null;
+        }
+
+        return _f0Cache.TryGetValue(model, out VitsF0Profile? prof) ? prof : null;
+    }
+
+    /// <summary>把名册缓存读进内存（启动时一次）。</summary>
+    private void LoadF0Cache()
+    {
+        _f0Cache = new Dictionary<string, VitsF0Profile>();
+        if (!File.Exists(_f0ProfilePath))
+        {
+            return;
+        }
+
+        try
+        {
+            string text = File.ReadAllText(_f0ProfilePath, Encoding.UTF8);
+            Dictionary<string, VitsF0Profile>? loaded =
+                JsonSerializer.Deserialize<Dictionary<string, VitsF0Profile>>(text);
+            if (loaded is not null)
+            {
+                _f0Cache = loaded;
+            }
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            _f0State = "error";
+            _f0Message = "F0 名册缓存读不出来（会重量一份）：" + ex.Message;
+        }
+    }
+
+    /// <summary>把名册缓存写回磁盘（锁内调用）。</summary>
+    private void SaveF0CacheLocked()
+    {
+        try
+        {
+            string json = JsonSerializer.Serialize(_f0Cache, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_f0ProfilePath, json, new UTF8Encoding(false));
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            _f0State = "error";
+            _f0Message = "F0 名册写不进磁盘：" + ex.Message;
         }
     }
 
@@ -299,6 +587,7 @@ public sealed class VitsService
             models,
             speakers,
             outputs,
+            f0 = F0State(),
             outDir = _outDir,
             scriptOk = cfg.ScriptPath.Length > 0 && File.Exists(cfg.ScriptPath),
             pythonOk = cfg.PythonPath.Length > 0 && File.Exists(cfg.PythonPath),
@@ -351,6 +640,8 @@ public sealed class VitsService
             _config.Sid = Math.Max(0, next.Sid);
             _config.VcSrc = Math.Max(0, next.VcSrc);
             _config.VcDst = Math.Max(0, next.VcDst);
+            _config.VcAutoSrc = next.VcAutoSrc;
+            _config.VcAutoF0 = next.VcAutoF0;
             _config.LengthScale = Clamp(next.LengthScale <= 0 ? 1.0 : next.LengthScale, 0.2, 3.0);
             _config.NoiseScale = Clamp(next.NoiseScale <= 0 ? 0.667 : next.NoiseScale, 0, 2.0);
             _config.NoiseScaleW = Clamp(next.NoiseScaleW <= 0 ? 0.8 : next.NoiseScaleW, 0, 2.0);

@@ -24,14 +24,18 @@ internal static class RvcRealtimeWorkerScript
 #                    "outputNoiseReduce":false,"usePv":false,"bypass":false,"sid":0,
 #                    "blockTime":0.25,"crossfadeTime":0.05,"extraTime":2.5}}
 #         {"cmd":"update","params":{"f0UpKey":12}}   # 只吃热更白名单：f0UpKey / formant / indexRate / threhold / 降噪 / bypass
-#         可选 "bridge":{"enabled":true,"blocks":2,"model":"346lab_S1","src":2,"dst":5,"modelsRoot":"...","repo":"...","device":"cuda"}
+#         可选 "bridge":{"enabled":true,"blocks":2,"model":"346lab_S1","src":2,"dst":5,
+#                        "srcAuto":true,"f0Auto":true,"dstF0":281.0,"f0Profile":"<data>\\vits-f0-profile.json",
+#                        "modelsRoot":"...","repo":"...","device":"cuda"}
 #         —— start / update 都吃 bridge：RVC 输出攒 blocks 块过一轮 VITS 语音转换再送设备（设置取自 VITS 页签）
+#            srcAuto=按 F0 名册自动挑原说话人；f0Auto=按目标说话人自然 F0 反推 f0UpKey（回写 RVC 链热更）
 #         {"cmd":"stop"} / {"cmd":"ping"} / {"cmd":"quit"}
 #   事件：{"ev":"ready"|"devices"|"started"|"stopped"|"level"|"latency"|"pong"|"error", ...}
 import os
 import sys
 import json
 import time
+import math
 import traceback
 
 # [段1] 协议通道独占 fd 1——torch / librosa / sounddevice 会往 stdout 打日志，不隔离就污染行协议
@@ -535,9 +539,10 @@ def _phase_vocoder(a, b, fade_out, fade_in):
 # 攒够 blocks 块 → 降采样到 VITS 模型采样率 → 说话人转换 → 升回设备采样率 → 播放队列。
 # 设置面单一真相源 = VITS 页签（model / src / dst 由 C# 侧随 start / update 下发）。
 class VitsBridge:
-    def __init__(self, cfg, samplerate, block_frame):
+    def __init__(self, cfg, samplerate, block_frame, chain=None):
         self.samplerate = int(samplerate)
         self.block_frame = int(block_frame)
+        self.chain = chain
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
         self.jobs = []
@@ -551,6 +556,25 @@ class VitsBridge:
         self.models_root = str(cfg.get("modelsRoot", "") or "")
         self.device = str(cfg.get("device", "") or DEVICE)
         self.enabled = bool(cfg.get("enabled", True))
+        # [段6b.0] 自动档：源说话人按 F0 名册挑、变调按目标说话人的自然 F0 反推
+        self.src_auto = bool(cfg.get("srcAuto", False))
+        self.f0_auto = bool(cfg.get("f0Auto", False))
+        self.dst_f0 = float(cfg.get("dstF0", 0) or 0)
+        self.f0_profile_path = str(cfg.get("f0Profile", "") or "")
+        self.f0map = {}
+        self.src_picked = self.src
+        self.f0_in = 0.0
+        self.f0_ema = 0.0
+        self.upkey = 0.0
+        if chain is not None:
+            try:
+                self.upkey = float(chain.params.get("f0UpKey", 0.0) or 0.0)
+            except Exception:
+                self.upkey = 0.0
+        self.tail_pad = 0
+        self.tail_pads = 0
+        self._last_log = 0.0
+        self.logs = []
         self.runner = None
         self.model_sr = 0
         self.state = "loading"
@@ -561,6 +585,50 @@ class VitsBridge:
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
+
+    # [段6b.0a] 日志——自动档做了什么、缺什么，都留可观测的一行（面板照它显示）
+    def _log(self, msg, force=False):
+        now = time.time()
+        if not force and now - self._last_log < 2.0:
+            return
+        self._last_log = now
+        line = time.strftime("%H:%M:%S") + " " + str(msg)
+        self.logs.append(line)
+        if len(self.logs) > 24:
+            self.logs = self.logs[-24:]
+        sys.stderr.write("vits bridge: " + line + "\n")
+        sys.stderr.flush()
+
+    # [段6b.0b] F0 名册——模型 → {说话人索引: 自然基频}；缺文件就明说，不静默退回
+    def _load_f0map(self):
+        self.f0map = {}
+        path = self.f0_profile_path
+        if not path:
+            self._log("没配置 F0 名册路径——自动挑源说话人 / 自动变调关闭", True)
+            return
+        if not os.path.isfile(path):
+            self._log("F0 名册文件不在位（" + path + "）——去 VITS 页签点「量 F0 名册」；自动档退回手动", True)
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            prof = data.get(self.model) or {}
+            raw = prof.get("F0") or prof.get("f0") or {}
+            self.f0map = {}
+            for k, v in raw.items():
+                try:
+                    fv = float(v)
+                except Exception:
+                    continue
+                if fv > 0:
+                    self.f0map[int(k)] = fv
+            if self.f0map:
+                self._log("F0 名册就绪：%d 人（%s）" % (len(self.f0map), prof.get("At", "")), True)
+            else:
+                self._log("F0 名册里没有 " + self.model + " 的条目——自动档退回手动", True)
+        except Exception as exc:
+            self.f0map = {}
+            self._log("F0 名册读不出来（%s）——自动档退回手动" % exc, True)
 
     # [段6b.1] 模型——首次转换时加载（加载期间播放队列空着，出声为静音）
     def _ensure(self):
@@ -581,8 +649,62 @@ class VitsBridge:
             self.state = "loading"
             cur = self.runner._resolve(self.model)
             self.model_sr = int(cur["sr"])
+            # 尾段补长的样本数：VITS 的 STFT 是 center=False，输出固定比输入短 (win-hop)
+            try:
+                hps = cur["hps"]
+                self.tail_pad = max(0, int(hps.data.win_length) - int(hps.data.hop_length))
+            except Exception:
+                self.tail_pad = 0
+            self.src_picked = min(max(self.src, 0), max(0, int(cur["n_speakers"]) - 1))
+            self._load_f0map()
         self.state = "ready"
         return self.runner
+
+    # [段6b.1b] 量一段 RVC 输出的中位基频——用 pyworld（RVC 链已在用的同一套依赖）
+    def _measure_f0(self, y):
+        try:
+            import pyworld as pw
+            y64 = np.ascontiguousarray(np.asarray(y, dtype=np.float64))
+            if y64.shape[0] < 2048:
+                return 0.0
+            f0, t = pw.dio(y64, self.model_sr, frame_period=10.0)
+            f0 = pw.stonemask(y64, f0, t, self.model_sr)
+            v = f0[f0 > 0]
+            return float(np.median(v)) if len(v) else 0.0
+        except Exception:
+            return 0.0
+
+    # [段6b.1c] 自动档——按 F0 名册挑源说话人；按目标说话人的自然 F0 反推变调
+    def _auto(self, y):
+        if not self.f0map:
+            return
+        f0 = self._measure_f0(y)
+        if f0 <= 0:
+            return
+        self.f0_in = f0
+        self.f0_ema = f0 if self.f0_ema <= 0 else (0.75 * self.f0_ema + 0.25 * f0)
+        if self.src_auto:
+            cand = sorted((abs(v - self.f0_ema), sid) for sid, v in self.f0map.items() if sid != self.dst)
+            if cand:
+                best = cand[0][1]
+                if best != self.src_picked:
+                    cur = abs(self.f0map.get(self.src_picked, 0.0) - self.f0_ema)
+                    if cand[0][0] + 6.0 < cur:
+                        self._log("自动挑源说话人 %d → %d（输入 F0 %.0f / 该说话人 %.0f）" % (
+                            self.src_picked, best, self.f0_ema, self.f0map[best]))
+                        self.src_picked = best
+        if self.f0_auto and self.dst_f0 > 0 and self.chain is not None:
+            want = 12.0 * math.log(max(self.dst_f0, 1.0) / max(self.f0_ema, 1.0), 2.0)
+            want = max(-24.0, min(24.0, want))
+            if abs(want - self.upkey) >= 0.5:
+                step = max(-1.0, min(1.0, want - self.upkey))
+                self.upkey = round(self.upkey + step, 2)
+                try:
+                    self.chain.update({"f0UpKey": self.upkey})
+                    self._log("自动变调 f0UpKey %+.2f（目标 F0 %.0f / 输入 %.0f）" % (
+                        self.upkey, self.dst_f0, self.f0_ema))
+                except Exception as exc:
+                    self._log("自动变调写不进 RVC 链：" + str(exc), True)
 
     # [段6b.2] 后台线程——串行取段推理；队列上限 4 段（跟不上实时就丢最旧，不无限涨延迟）
     def _loop(self):
@@ -607,12 +729,21 @@ class VitsBridge:
                 need = int(round(y.shape[0] * float(self.model_sr) / float(self.samplerate))) if self.samplerate else y.shape[0]
                 if self.samplerate != self.model_sr:
                     y = librosa.resample(y, orig_sr=self.samplerate, target_sr=self.model_sr)
+                # 自动档先量这一段（源说话人 / 变调都靠它；量不出来就沿用上一档）
+                self._auto(y)
+                # 尾段：VITS 的 STFT 是 center=False，输出固定比输入短 (win-hop) 个样本。
+                # 按 need 补零会在每段尾部插一小段静音（0.25s 块约 6ms，听感是「颗粒」）。
+                # 改成「输入尾部多补一截再 VC，输出裁回 need」——不插零，边界连续。
+                if self.tail_pad > 0:
+                    y = np.pad(y, (0, self.tail_pad), mode="reflect")
                 if y.shape[0] < 4096:
                     y = np.pad(y, (0, 4096 - y.shape[0]))
-                out = np.asarray(runner.vc_pcm(y, self.src, self.dst), dtype="float32")
+                out = np.asarray(runner.vc_pcm(y, self.src_picked, self.dst), dtype="float32")
                 if out.shape[0] > need:
                     out = out[:need]
                 elif out.shape[0] < need:
+                    # 还是短（极短块 / 非标准 hop）——只在这里补，并计数出声
+                    self.tail_pads += 1
                     out = np.pad(out, (0, need - out.shape[0]))
                 if self.samplerate != self.model_sr:
                     out = librosa.resample(out, orig_sr=self.model_sr, target_sr=self.samplerate)
@@ -675,8 +806,23 @@ class VitsBridge:
                     self.ready = np.zeros(0, dtype="float32")
             if "src" in cfg:
                 self.src = int(cfg["src"] or 0)
+                if not self.src_auto:
+                    self.src_picked = self.src
             if "dst" in cfg:
                 self.dst = int(cfg["dst"] or 0)
+            if "srcAuto" in cfg:
+                self.src_auto = bool(cfg["srcAuto"])
+                if not self.src_auto:
+                    self.src_picked = self.src
+            if "f0Auto" in cfg:
+                self.f0_auto = bool(cfg["f0Auto"])
+            if "dstF0" in cfg:
+                self.dst_f0 = float(cfg["dstF0"] or 0)
+            if "f0Profile" in cfg:
+                path = str(cfg["f0Profile"] or "")
+                if path != self.f0_profile_path:
+                    self.f0_profile_path = path
+                    self._load_f0map()
             if "model" in cfg:
                 name = str(cfg["model"] or "")
                 if name != self.model:
@@ -709,6 +855,15 @@ class VitsBridge:
             "model": self.model,
             "src": self.src,
             "dst": self.dst,
+            "srcPicked": self.src_picked,
+            "srcAuto": self.src_auto,
+            "f0Auto": self.f0_auto,
+            "f0In": round(self.f0_in, 1),
+            "dstF0": round(self.dst_f0, 1),
+            "upKey": round(self.upkey, 2),
+            "tailPad": self.tail_pad,
+            "tailPads": self.tail_pads,
+            "log": list(self.logs[-12:]),
             "modelSr": self.model_sr,
             "queueMs": queue_ms,
             "pendingBlocks": pending,
@@ -830,7 +985,7 @@ class RealtimeHost:
         # 桥接 VITS-VC（开关与攒块数随 start 下发；关着就不建对象，回调零开销）
         bridge_cfg = req.get("bridge") or {}
         if bridge_cfg.get("enabled"):
-            self.bridge = VitsBridge(bridge_cfg, sr, chain.block_frame)
+            self.bridge = VitsBridge(bridge_cfg, sr, chain.block_frame, chain)
         else:
             self.bridge = None
 
@@ -920,7 +1075,8 @@ class RealtimeHost:
         if bridge_cfg is not None:
             if self.bridge is None:
                 if bridge_cfg.get("enabled"):
-                    self.bridge = VitsBridge(bridge_cfg, self.chain.samplerate, self.chain.block_frame)
+                    self.bridge = VitsBridge(bridge_cfg, self.chain.samplerate, self.chain.block_frame,
+                                             self.chain)
             else:
                 self.bridge.update(bridge_cfg)
                 if not bridge_cfg.get("enabled"):
@@ -976,11 +1132,15 @@ def selftest():
             "model": arg("--vits-model"),
             "src": int(arg("--vits-src", "0")),
             "dst": int(arg("--vits-dst", "1")),
+            "srcAuto": arg("--vits-src-auto", "0") not in ("0", "false", "False", ""),
+            "f0Auto": arg("--vits-f0-auto", "0") not in ("0", "false", "False", ""),
+            "dstF0": float(arg("--vits-dst-f0", "0") or 0),
+            "f0Profile": arg("--vits-f0-profile"),
             "modelsRoot": arg("--vits-models"),
             "repo": arg("--vits-repo"),
             "device": DEVICE,
         }
-        bridge = VitsBridge(cfg, sr, n)
+        bridge = VitsBridge(cfg, sr, n, chain)
         bridged = []
         for start in range(0, total, n):
             bridged.append(bridge.push(audio[start:start + n]))

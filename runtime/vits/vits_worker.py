@@ -167,7 +167,8 @@ class Runner:
 
     # ---- 推理 ----
 
-    def tts(self, text, sid, length_scale, noise_scale, noise_scale_w, cleaned, out):
+    def tts_audio(self, text, sid, length_scale, noise_scale, noise_scale_w, cleaned):
+        """合成一句并返回 float32 numpy 波形（不落盘）——F0 名册测量用。"""
         cur = self._require()
         seq = self._to_sequence(text, cleaned)
         if sid < 0 or (cur["n_speakers"] > 0 and sid >= cur["n_speakers"]):
@@ -179,10 +180,47 @@ class Runner:
             sid_t = LongTensor([sid]).to(self.device)
             audio = net.infer(x, x_len, sid=sid_t, noise_scale=noise_scale,
                               noise_scale_w=noise_scale_w, length_scale=length_scale)[0][0, 0]
-            audio = audio.data.float().cpu().numpy()
+            return audio.data.float().cpu().numpy()
+
+    def tts(self, text, sid, length_scale, noise_scale, noise_scale_w, cleaned, out):
+        cur = self._require()
+        audio = self.tts_audio(text, sid, length_scale, noise_scale, noise_scale_w, cleaned)
+        seq = self._to_sequence(text, cleaned)
         seconds = write_wav(out, audio, cur["sr"])
         return {"out": out, "seconds": round(seconds, 3), "tokens": len(seq),
                 "sampling_rate": cur["sr"], "sid": sid, "model": cur["name"]}
+
+    def f0_profile(self, text, sids, emit):
+        """逐个说话人合成一句、量中位基频（F0）——桥接「自动挑原说话人 / 自动变调」的名册。
+
+        逐条回一行（stage=item），收尾回 stage=done；单条失败不牵连其余。
+        F0 用 pyworld（RVC 链已在用的同一套依赖），不新装包。
+        """
+        cur = self._require()
+        import pyworld as pw
+        t_all = time.time()
+        ok_count = 0
+        sr = int(cur["sr"])
+        for i, sid in enumerate(sids):
+            t0 = time.time()
+            try:
+                sid = int(sid)
+                audio = self.tts_audio(text, sid, 1.0, 0.667, 0.8, False)
+                y = np.ascontiguousarray(audio.astype(np.float64))
+                f0, t = pw.dio(y, sr, frame_period=10.0)
+                f0 = pw.stonemask(y, f0, t, sr)
+                voiced = f0[f0 > 0]
+                med = float(np.median(voiced)) if len(voiced) else 0.0
+                ok_count += 1
+                emit({"ok": True, "stage": "item", "index": i, "sid": sid,
+                      "f0": round(med, 1), "voiced": int(len(voiced)),
+                      "ms": int((time.time() - t0) * 1000)})
+            except Exception as e:
+                log("F0 名册第 %d 条失败（sid %s）：%s" % (i, sid, e))
+                emit({"ok": True, "stage": "item", "index": i, "sid": sid,
+                      "error": str(e), "ms": int((time.time() - t0) * 1000)})
+        emit({"ok": True, "stage": "done", "total": len(sids), "ok_count": ok_count,
+              "ms": int((time.time() - t_all) * 1000)})
 
     def tts_batch(self, text, items, length_scale, noise_scale, noise_scale_w, cleaned, emit):
         """同一条文本批量跑多个说话人——文本前端只算一次、模型只加载一次。
@@ -354,6 +392,23 @@ def main():
         if (req.get("op") or "").strip().lower() == "stop":
             print(json.dumps({"ok": True, "stopped": True}, ensure_ascii=True), flush=True)
             break
+        if (req.get("op") or "").strip().lower() == "f0_profile":
+            # F0 名册：逐条回执（stage=item）+ 收尾回执（stage=done）
+            try:
+                cur = runner._require()
+                sids = req.get("sids")
+                if not isinstance(sids, list) or not sids:
+                    n = int(cur["n_speakers"]) or 1
+                    sids = list(range(n))
+                runner.f0_profile(
+                    req.get("text") or "こんにちは、世界。今日はいい天気ですね。",
+                    sids,
+                    lambda obj: print(json.dumps(obj, ensure_ascii=True), flush=True))
+            except Exception as e:
+                resp = {"ok": False, "error": str(e), "trace": traceback.format_exc(limit=3)}
+                log(resp["trace"])
+                print(json.dumps(resp, ensure_ascii=True), flush=True)
+            continue
         if (req.get("op") or "").strip().lower() == "tts_batch":
             # 批量：逐条回执（stage=item）+ 收尾回执（stage=done）——不走单回执通道
             try:

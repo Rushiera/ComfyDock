@@ -902,7 +902,7 @@
             </div>
 
             <div class="rh-block">
-              <h4>桥接 VITS 语音转换 <span class="rh-dim" style="font-weight:normal">（RVC 变声结果再经一轮 VITS 换音色才发声；模型 / 说话人取自 VITS 页签，那边改了即时生效）</span></h4>
+              <h4>桥接 VITS 语音转换 <span class="rh-dim" style="font-weight:normal">（RVC 变声结果再经一轮 VITS 换音色才发声；模型 / 说话人 / 自动档取自 VITS 页签，那边改了即时生效）</span></h4>
               <div class="moss-form">
                 <div class="moss-line">
                   <label class="moss-chk" title="打开后 RVC 输出先送 VITS 做说话人转换，转换完才送输出设备"><input type="checkbox" id="rvcRtVcBridge"> 桥接 VITS-VC</label>
@@ -913,7 +913,8 @@
                   <input type="range" id="rvcRtVcBlocks" min="1" max="8" step="1">
                   <span class="val" id="rvcRtVcBlocksVal">1</span>
                 </div>
-                <div class="rh-dim" style="font-weight:normal">推理前降到 VITS 模型采样率（22.05k / 44.1k），转换后升回设备采样率；攒块越多延迟越高、欠载越少</div>
+                <div class="rh-dim" style="font-weight:normal">推理前降到 VITS 模型采样率（22.05k / 44.1k），转换后升回设备采样率；攒块越多延迟越高、欠载越少。攒块从 1 调到 4（1 秒）能把块边界的失真压掉四分之三</div>
+                <div class="rh-dim" style="font-weight:normal">原说话人默认由 VITS 页签的「自动挑」按 F0 名册决定；自动变调会把 RVC 输出的基频拉回目标角色的音域——两条都做什么、缺什么，看下面状态里的「桥接日志」</div>
               </div>
             </div>
 
@@ -1109,6 +1110,12 @@
                   <label>目标说话人</label><select id="vitsVcDst" style="width:280px"></select>
                   <button class="btn-primary" id="vitsVcRun">开始转换</button>
                   <span class="path" id="vitsVcLine">—</span>
+                </div>
+                <div class="moss-line">
+                  <label class="moss-chk" title="RVC 桥接时按 F0 名册自动挑与 RVC 输出最接近的原说话人（关掉才用上面手选的）"><input type="checkbox" id="vitsVcAutoSrc"> 桥接自动挑原说话人</label>
+                  <label class="moss-chk" title="RVC 桥接时按目标说话人的自然音域反推变调，让 RVC 输出先落到那个音域再转换"><input type="checkbox" id="vitsVcAutoF0"> 桥接自动变调</label>
+                  <span class="path" id="vitsF0Line">F0 名册：—</span>
+                  <button class="btn-mini" id="vitsF0Build" title="逐说话人合成一句探针文本、量中位基频——桥接的自动档靠它（缺了自动档会退回手动并在桥接日志里出声）">量 F0 名册</button>
                 </div>
                 <details class="moss-help">
                   <summary>参数说明（源 / 目标说话人怎么选）</summary>
@@ -4083,13 +4090,32 @@
 
       const bridgeCfg = rvcRtData.bridge || {};
       document.getElementById("rvcRtVcLine").textContent = bridgeCfg.model
-        ? ("VITS：" + bridgeCfg.model + " · 说话人 " + bridgeCfg.src + "→" + bridgeCfg.dst)
+        ? ("VITS：" + bridgeCfg.model + " · "
+          + (bridgeCfg.srcAuto ? "原说话人自动挑" : ("说话人 " + bridgeCfg.src))
+          + "→" + bridgeCfg.dst
+          + (bridgeCfg.f0Auto ? " · 自动变调" : ""))
         : "VITS 页签还没选模型";
       if (state.bridgeEnabled) {
         rows.push(row("桥接 VITS-VC", state.bridgeState === "ready",
           (state.bridgeState || "") + (state.bridgeModel ? " · " + state.bridgeModel : "")
           + " · 攒 " + state.bridgeBlocks + " 块"
           + (state.bridgeState === "ready" ? " · 推理 " + state.bridgeInferMs + " 毫秒" : "")));
+        rows.push(row("桥接说话人", true,
+          (state.bridgeSrcAuto
+            ? ("源自动挑 → " + (state.bridgeSrcPicked || 0))
+            : ("源手动 " + state.bridgeSrc))
+          + " · 目标 " + state.bridgeDst
+          + (state.bridgeDstF0 > 0
+            ? ("（自然 F0 " + Math.round(state.bridgeDstF0) + " Hz）")
+            : "（无名册 F0——自动变调不可用）")));
+        if (state.bridgeF0In > 0) {
+          rows.push(row("桥接基频", true,
+            "RVC 输出 " + Math.round(state.bridgeF0In) + " Hz"
+            + (state.bridgeUpKey ? (" · 自动变调 " + state.bridgeUpKey + " 半音") : " · 自动变调关")));
+        }
+        for (const line of (state.bridgeLog || [])) {
+          rows.push(row("桥接日志", true, line));
+        }
         if (state.bridgeState === "error" && state.bridgeMessage) {
           rows.push(row("桥接失败", false, state.bridgeMessage));
         }
@@ -4805,6 +4831,26 @@
       ).join("");
     }
 
+    // F0 名册状态——桥接自动档的数据源，缺了什么就红着说话
+    function renderVitsF0(f0State) {
+      const line = document.getElementById("vitsF0Line");
+      if (!line) { return; }
+      const f0 = f0State || (vitsData && vitsData.f0) || {};
+      const state = f0.state || "idle";
+      if (state === "running") {
+        line.textContent = "F0 名册：" + (f0.message || "正在量…") + "（" + (f0.done || 0) + "/" + (f0.total || 0) + "）";
+        line.className = "path";
+        return;
+      }
+      if ((f0.count || 0) > 0) {
+        line.textContent = "F0 名册：" + f0.count + " 人 · " + (f0.at || "") + " · " + (f0.model || "");
+        line.className = "path ok";
+        return;
+      }
+      line.textContent = "F0 名册：缺（" + (f0.message || "还没量") + "）—— 桥接的自动档不可用，会退回手动原说话人";
+      line.className = "path bad";
+    }
+
     function renderVitsAll() {
       if (!vitsData) { return; }
       const cfg = vitsCfg();
@@ -4818,6 +4864,11 @@
       }
       vitsFillSpeakers("vitsVcSrc", vitsData.speakers, cfg.vcSrc);
       vitsFillSpeakers("vitsVcDst", vitsData.speakers, cfg.vcDst);
+      const autoSrcBox = document.getElementById("vitsVcAutoSrc");
+      if (autoSrcBox) { autoSrcBox.checked = cfg.vcAutoSrc !== false; }
+      const autoF0Box = document.getElementById("vitsVcAutoF0");
+      if (autoF0Box) { autoF0Box.checked = cfg.vcAutoF0 !== false; }
+      renderVitsF0();
       renderVitsOutputs();
       renderVitsMatrix();
       renderVitsEnv();
@@ -4911,6 +4962,8 @@
         vcAudio: cfg.vcAudio || "",
         vcSrc: cfg.vcSrc || 0,
         vcDst: cfg.vcDst || 0,
+        vcAutoSrc: !!cfg.vcAutoSrc,
+        vcAutoF0: !!cfg.vcAutoF0,
       };
       for (const k in (extra || {})) { body[k] = extra[k]; }
       return body;
@@ -4929,6 +4982,8 @@
         vcAudio: (document.getElementById("vitsVcAudio") || {}).value || "",
         vcSrc: parseInt((document.getElementById("vitsVcSrc") || {}).value || "0", 10) || 0,
         vcDst: parseInt((document.getElementById("vitsVcDst") || {}).value || "0", 10) || 0,
+        vcAutoSrc: !!(document.getElementById("vitsVcAutoSrc") || {}).checked,
+        vcAutoF0: !!(document.getElementById("vitsVcAutoF0") || {}).checked,
       });
       const data = await vitsPost("/api/vits/config", body);
       if (data && data.ok) {
@@ -5037,6 +5092,12 @@
               : ((engine.state || "stopped") + (engine.message ? (" · " + engine.message) : ""));
           }
           vitsShowJob(data.job);
+          // F0 名册可能在后台量（加载模型后自动补量）——轮询面带它，进度才动得起来
+          if (data.f0) {
+            vitsData = vitsData || {};
+            vitsData.f0 = data.f0;
+            renderVitsF0(data.f0);
+          }
           // 批量在跑：把逐条回执接进来，边跑边填格子（800 ms 粒度）
           vitsLiveJob = data.job || null;
           const job = vitsLiveJob;
@@ -5093,10 +5154,27 @@
       else if (data) { toast("❌ " + (data.message || "加载失败")); }
       await loadVits();
     });
-    // 说话人 / 设备改了即时落盘——RVC 实时链的桥接靠这次落盘把新设置推给在跑的流
-    for (const id of ["vitsVcSrc", "vitsVcDst", "vitsDevice"]) {
+    // 说话人 / 设备 / 自动档改了即时落盘——RVC 实时链的桥接靠这次落盘把新设置推给在跑的流
+    for (const id of ["vitsVcSrc", "vitsVcDst", "vitsDevice", "vitsVcAutoSrc", "vitsVcAutoF0"]) {
       const box = document.getElementById(id);
       if (box) { box.addEventListener("change", () => { vitsSaveCfg(); }); }
+    }
+    // 量 F0 名册——桥接自动挑源说话人 / 自动变调的数据源
+    const f0Btn = document.getElementById("vitsF0Build");
+    if (f0Btn) {
+      f0Btn.addEventListener("click", async () => {
+        const model = (document.getElementById("vitsModel") || {}).value || "";
+        if (!model) { toast("先选一个模型"); return; }
+        f0Btn.disabled = true;
+        toast("正在量 F0 名册（几百人的模型要一两分钟）…");
+        try {
+          const data = await vitsPost("/api/vits/f0?model=" + encodeURIComponent(model) + "&force=true", {});
+          toast((data && data.ok ? "✅ " : "❌ ") + ((data && (data.message || data.error)) || "没回执"));
+        } finally {
+          f0Btn.disabled = false;
+          await loadVits();
+        }
+      });
     }
     for (const tab of document.querySelectorAll("#genPanelVits .sub-tab")) {
       tab.addEventListener("click", () => setVitsView(tab.dataset.vitsView));

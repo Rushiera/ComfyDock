@@ -33,6 +33,18 @@ public sealed class RvcVitsBridgeSpec
     /// <summary>目标说话人索引。</summary>
     public int Dst { get; set; }
 
+    /// <summary>自动挑原说话人（按 F0 名册挑与 RVC 输出最接近的；Src 只在关掉自动时用）。</summary>
+    public bool SrcAuto { get; set; }
+
+    /// <summary>自动变调（按 RVC 输出实测 F0 反推 f0UpKey，让输出落到目标说话人的音域）。</summary>
+    public bool F0Auto { get; set; }
+
+    /// <summary>目标说话人的自然 F0（Hz；名册里没有则 0 = 自动变调不可用）。</summary>
+    public double DstF0 { get; set; }
+
+    /// <summary>F0 名册文件路径（worker 侧直接读；空 = 没有名册）。</summary>
+    public string F0Profile { get; set; } = "";
+
     /// <summary>VITS 模型根（ComfyUI\models\VITS）。</summary>
     public string ModelsRoot { get; set; } = "";
 
@@ -274,6 +286,24 @@ public sealed class RvcRealtimeState
 
     /// <summary>桥接欠载次数（推理跟不上实时 → 输出静音的次数）。</summary>
     public long BridgeUnderruns { get; set; }
+
+    /// <summary>桥接是否在自动挑原说话人。</summary>
+    public bool BridgeSrcAuto { get; set; }
+
+    /// <summary>自动挑出来的源说话人（BridgeSrcAuto 时面板显示它，而不是配置里的 BridgeSrc）。</summary>
+    public int BridgeSrcPicked { get; set; }
+
+    /// <summary>RVC 输出实测基频（Hz；0 = 还没测到）。</summary>
+    public double BridgeF0In { get; set; }
+
+    /// <summary>自动变调后的实际 f0UpKey（半音）。</summary>
+    public double BridgeUpKey { get; set; }
+
+    /// <summary>目标说话人的自然 F0（Hz；0 = 名册里没有，自动变调不可用）。</summary>
+    public double BridgeDstF0 { get; set; }
+
+    /// <summary>桥接日志尾巴（自动挑源 / 自动变调 / 缺名册等可观测事件，逐条带时刻）。</summary>
+    public List<string> BridgeLog { get; set; } = new List<string>();
     /// <summary>当前实际在跑的音色模型文件名（开流后才有；换音色重开流会跟着变）。</summary>
     public string Model { get; set; } = "";
 

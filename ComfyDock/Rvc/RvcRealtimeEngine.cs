@@ -893,6 +893,10 @@ public sealed class RvcRealtimeEngine : IDisposable
             ["model"] = bridge.Model,
             ["src"] = bridge.Src,
             ["dst"] = bridge.Dst,
+            ["srcAuto"] = bridge.SrcAuto,
+            ["f0Auto"] = bridge.F0Auto,
+            ["dstF0"] = bridge.DstF0,
+            ["f0Profile"] = bridge.F0Profile,
             ["modelsRoot"] = bridge.ModelsRoot,
             ["repo"] = bridge.Repo,
             ["device"] = bridge.Device,
@@ -988,11 +992,38 @@ public sealed class RvcRealtimeEngine : IDisposable
             _state.BridgeModel = StringOf(node, "model");
             _state.BridgeSrc = (int)DoubleOf(node, "src");
             _state.BridgeDst = (int)DoubleOf(node, "dst");
+            _state.BridgeSrcAuto = BoolOf(node, "srcAuto");
+            _state.BridgeSrcPicked = (int)DoubleOf(node, "srcPicked");
+            _state.BridgeF0In = DoubleOf(node, "f0In");
+            _state.BridgeUpKey = DoubleOf(node, "upKey");
+            _state.BridgeDstF0 = DoubleOf(node, "dstF0");
             _state.BridgeInferMs = DoubleOf(node, "inferMs");
             _state.BridgeUnderruns = (long)DoubleOf(node, "underruns");
             _state.BridgeMs = DoubleOf(node, "queueMs")
                 + DoubleOf(node, "pendingBlocks") * _state.BlockMs
                 + _state.BridgeInferMs;
+
+            var log = new List<string>();
+            if (node is JsonObject obj && obj.TryGetPropertyValue("log", out JsonNode? logNode)
+                && logNode is JsonArray arr)
+            {
+                foreach (JsonNode? line in arr)
+                {
+                    if (line is not null)
+                    {
+                        try
+                        {
+                            log.Add(line.GetValue<string>());
+                        }
+                        catch (Exception ex) when (ex is InvalidOperationException || ex is FormatException)
+                        {
+                            // 单行读不出来就跳过——日志不该把状态整块带塌
+                        }
+                    }
+                }
+            }
+
+            _state.BridgeLog = log;
         }
     }
 

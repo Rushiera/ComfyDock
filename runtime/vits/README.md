@@ -46,11 +46,14 @@ python_embeded\python.exe runtime\vits\vits_worker.py ^
 | `tts` | `text` `sid` `length_scale`(1.0) `noise_scale`(0.667) `noise_scale_w`(0.8) `cleaned`(false) `out` | `out` / `seconds` / `tokens` |
 | `tts_batch` | 与 `tts` 同参数，外加 `items[{sid, out}]` | 逐条 `{"stage":"item","sid","out","seconds","tokens","ms","error"}`，收尾 `{"stage":"done","total","ok_count","fail_count","ms"}` |
 | `vc` | `audio` `src` `dst` `out` | `out` / `seconds` |
+| `f0_profile` | `text` `sids`（省略 = 全部说话人） | 逐条 `{"stage":"item","sid","f0","voiced","ms"}` + 收尾 `{"stage":"done","total","ok_count","ms"}` |
 | `ping` / `stop` | — | 设备与当前模型 / 退出 |
 
 `cleaned=true` = 文本已是音素串（符号输入），跳过后端 cleaners——对应原版 `[CLEANED]` 标记。
 
 `tts_batch` 是面板「批量合成」走的通道：**同一条文本、一次模型加载、一次文本前端**，然后逐说话人前向并各落一个 wav；单条失败只回该条 `error`，不中断整批（回执是**多行**，C# 侧要读到 `stage=done` 才算收口）。
+
+`f0_profile` 是「说话人自然基频名册」的量法：对每个说话人合成一句探针文本（默认 `<F0ProbeText>`），用 pyworld（RVC 链已在用，不新装包）取中位 F0。RVC 实时链的桥接靠这份名册**自动挑源说话人 / 自动变调**；结果由 C# 侧缓存到 `data\vits-f0-profile.json`（按 `.pth` 的 mtime+字节数判新鲜度），桥接进程直接读该文件、不重复量。实测 346lab_v3（85 人）20.6 秒、346lab_S1（386 人）73.3 秒。
 
 ## 四、与原版的差异（三处，其余逐文件一致）
 

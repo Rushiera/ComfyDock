@@ -524,11 +524,138 @@ public sealed class VitsEngine : IDisposable
         return await RunAudioAsync(request, 600000, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 量一个模型的「说话人自然基频名册」——逐个说话人合成一句短文本、取中位 F0。
+    /// <para>桥接的「自动挑原说话人 / 自动变调」靠这份名册；缺它就退回手动并在状态里出声。</para>
+    /// </summary>
+    /// <param name="text">探针文本（1.5–2.5 秒，浊音帧够多即可）。</param>
+    /// <param name="sids">要量的说话人索引（空 = 模型全部说话人）。</param>
+    /// <param name="onItem">每量完一条的回调（sid, f0, 已完成, 总数）。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>(sid → F0 字典, 错误说明)。</returns>
+    public async Task<(Dictionary<int, double> F0, string Error)> F0ProfileAsync(
+        string text,
+        IReadOnlyList<int>? sids,
+        Action<int, double, int, int>? onItem,
+        CancellationToken ct)
+    {
+        var profile = new Dictionary<int, double>();
+        (bool Ok, string Message) started = await EnsureStartedAsync(ct).ConfigureAwait(false);
+        if (!started.Ok)
+        {
+            return (profile, started.Message);
+        }
+
+        int total = sids is null ? 0 : sids.Count;
+        lock (_gate)
+        {
+            if (_state.State == "busy")
+            {
+                return (profile, "上一件还在跑");
+            }
+
+            _state.State = "busy";
+            _state.Message = "正在量说话人基频名册…";
+        }
+
+        var request = new JsonObject
+        {
+            ["op"] = "f0_profile",
+            ["text"] = text,
+        };
+
+        if (sids is not null && sids.Count > 0)
+        {
+            var arr = new JsonArray();
+            foreach (int sid in sids)
+            {
+                arr.Add(sid);
+            }
+
+            request["sids"] = arr;
+        }
+
+        Process? proc = _proc;
+        if (proc is null)
+        {
+            SetState("error", "引擎进程不见了");
+            return (profile, "引擎进程不见了");
+        }
+
+        await _turn.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                await proc.StandardInput.WriteLineAsync(request.ToJsonString()).ConfigureAwait(false);
+                await proc.StandardInput.FlushAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
+            {
+                SetState("error", "写不进引擎：" + ex.Message);
+                return (profile, "写不进引擎：" + ex.Message);
+            }
+
+            while (true)
+            {
+                string? line = await ReadLineWithTimeoutAsync(proc, 600000, ct).ConfigureAwait(false);
+                if (line is null)
+                {
+                    string tail = StderrTail();
+                    string err = "引擎没有回执" + (tail.Length > 0 ? "\n" + tail : "");
+                    SetState("error", err);
+                    return (profile, err);
+                }
+
+                JsonNode? node = TryParse(line);
+                if (node is null)
+                {
+                    SetState("error", "回执不是合法 JSON：" + line);
+                    return (profile, "回执不是合法 JSON：" + line);
+                }
+
+                if (!BoolOf(node, "ok"))
+                {
+                    string err = StringOf(node, "error");
+                    err = err.Length > 0 ? err : "引擎报错（无说明）";
+                    SetState("error", err);
+                    return (profile, err);
+                }
+
+                string stage = StringOf(node, "stage");
+                if (stage == "item")
+                {
+                    int sid = (int)DoubleOf(node, "sid");
+                    double f0 = DoubleOf(node, "f0");
+                    if (StringOf(node, "error").Length == 0 && f0 > 0)
+                    {
+                        profile[sid] = f0;
+                    }
+
+                    onItem?.Invoke(sid, f0, profile.Count, total);
+                    continue;
+                }
+
+                if (stage == "done")
+                {
+                    SetState("ready", "引擎空闲");
+                    return (profile, "");
+                }
+
+                SetState("error", "F0 名册回执形态意外：" + line);
+                return (profile, "F0 名册回执形态意外：" + line);
+            }
+        }
+        finally
+        {
+            _turn.Release();
+        }
+    }
+
     /// <summary>停掉 worker（发 stop，4 秒不退就强杀）。</summary>
     public void Stop()
     {
         Process? proc;
-        lock (_gate)
         {
             proc = _proc;
             _proc = null;
