@@ -20,6 +20,9 @@ public enum MossTarget
 
     /// <summary>diffusers 目录（HF Loader 直接读绝对路径，不落模型目录）。</summary>
     HfDirectory,
+
+    /// <summary>图像编辑 LoRA（models\Moss-Image-Edit——编辑插件按目录读 adapter 两件）。</summary>
+    MossEditAdapter,
 }
 
 /// <summary>
@@ -373,6 +376,76 @@ public static class MossCatalog
             Note = "diffusers 目录方案（HF Loader）用",
             ModelScopeRepo = "OpenMOSS/MOSS-Image-SFT",
         },
+        new MossFile
+        {
+            Id = "hf-pipeline",
+            Title = "官方完整版 · pipeline_moss_image.py",
+            Repo = "OpenMOSS-Team/MOSS-Image-SFT",
+            RepoPath = "pipeline_moss_image.py",
+            Target = MossTarget.HfDirectory,
+            SubDir = "MOSS-Image-SFT",
+            Bytes = 25060,
+            Note = "图像编辑插件按文件路径 import 这一份官方 pipeline——缺它编辑链直接报「不是完整的 snapshot」",
+            ModelScopeRepo = "OpenMOSS/MOSS-Image-SFT",
+        },
+        new MossFile
+        {
+            Id = "hf-model-index",
+            Title = "官方完整版 · model_index.json",
+            Repo = "OpenMOSS-Team/MOSS-Image-SFT",
+            RepoPath = "model_index.json",
+            Target = MossTarget.HfDirectory,
+            SubDir = "MOSS-Image-SFT",
+            Bytes = 412,
+            Note = "diffusers 目录的组件索引（transformer / text_encoder / tokenizer / vae / scheduler）",
+            ModelScopeRepo = "OpenMOSS/MOSS-Image-SFT",
+        },
+        new MossFile
+        {
+            Id = "hf-configuration",
+            Title = "官方完整版 · configuration.json",
+            Repo = "OpenMOSS-Team/MOSS-Image-SFT",
+            RepoPath = "configuration.json",
+            Target = MossTarget.HfDirectory,
+            SubDir = "MOSS-Image-SFT",
+            Bytes = 71,
+            Note = "仓库级配置文件（官方快照自带）",
+            ModelScopeRepo = "OpenMOSS/MOSS-Image-SFT",
+        },
+        new MossFile
+        {
+            Id = "hf-scheduler-config",
+            Title = "官方完整版 · scheduler 配置",
+            Repo = "OpenMOSS-Team/MOSS-Image-SFT",
+            RepoPath = "scheduler/scheduler_config.json",
+            Target = MossTarget.HfDirectory,
+            SubDir = "MOSS-Image-SFT",
+            Bytes = 494,
+            Note = "编辑插件按 snapshot\\scheduler 读 MOSSImageScheduler——缺它采样器建不起来",
+            ModelScopeRepo = "OpenMOSS/MOSS-Image-SFT",
+        },
+        new MossFile
+        {
+            Id = "edit-adapter-model",
+            Title = "图像编辑 LoRA · adapter_model.safetensors",
+            Repo = "chinoll/Moss-Image-Edit",
+            RepoPath = "adapter_model.safetensors",
+            Target = MossTarget.MossEditAdapter,
+            FileName = "adapter_model.safetensors",
+            Bytes = 297382216,
+            Note = "编辑 LoRA 权重（rank 64 / alpha 64 / bf16）——挂在 42 层的 q/k/v/o/ffn 上，约 284M；魔搭无镜像，只能走 hf-mirror",
+        },
+        new MossFile
+        {
+            Id = "edit-adapter-config",
+            Title = "图像编辑 LoRA · adapter_config.json",
+            Repo = "chinoll/Moss-Image-Edit",
+            RepoPath = "adapter_config.json",
+            Target = MossTarget.MossEditAdapter,
+            FileName = "adapter_config.json",
+            Bytes = 53712,
+            Note = "编辑 LoRA 的模块清单与超参（252 个 target、权重校验和）——插件按它严格校验权重",
+        },
     };
 
     /// <summary>全部方案——推荐方案 + 可选方案。</summary>
@@ -416,6 +489,7 @@ public static class MossCatalog
                 "hf-transformer-index", "hf-text-config", "hf-text-1", "hf-text-2", "hf-text-3",
                 "hf-text-4", "hf-text-index", "hf-tokenizer", "hf-tokenizer-config",
                 "hf-tokenizer-template", "hf-vae-config", "hf-vae",
+                "hf-pipeline", "hf-model-index", "hf-configuration", "hf-scheduler-config",
             },
             MinVramMb = 18432,
             Recommended = false,
@@ -427,6 +501,24 @@ public static class MossCatalog
             Note = "约 1.2G——把官方 50 步 + CFG 3 缩到 8 步 / CFG 1，快 6~9 倍",
             Files = new[] { "lora-dmd-8step" },
             MinVramMb = 0,
+            Recommended = false,
+        },
+        new MossPlan
+        {
+            Id = "edit",
+            Title = "图像编辑（diffusers 底模 + 编辑 LoRA）",
+            Note = "约 27.3G 磁盘——官方 diffusers 全量目录 + chinoll 的编辑 LoRA；"
+                + "编辑链只能走这条（参考图以 KV 形式进注意力，单文件主模型没有这条通路）",
+            Files = new[]
+            {
+                "hf-transformer-config", "hf-transformer-1", "hf-transformer-2", "hf-transformer-3",
+                "hf-transformer-index", "hf-text-config", "hf-text-1", "hf-text-2", "hf-text-3",
+                "hf-text-4", "hf-text-index", "hf-tokenizer", "hf-tokenizer-config",
+                "hf-tokenizer-template", "hf-vae-config", "hf-vae",
+                "hf-pipeline", "hf-model-index", "hf-configuration", "hf-scheduler-config",
+                "edit-adapter-model", "edit-adapter-config",
+            },
+            MinVramMb = 8192,
             Recommended = false,
         },
     };

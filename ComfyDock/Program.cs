@@ -1011,6 +1011,7 @@ public static class Program
                 job = moss.Job(),
                 downloads = moss.Downloads(),
                 plugin = moss.Plugin,
+                editPlugin = moss.EditPlugin,
                 local = moss.Local,
             }, JsonOptions);
         });
@@ -1063,6 +1064,18 @@ public static class Program
             return Results.Json(new { ok = moss.Plugin.State == "done", message, state = moss.Plugin.State }, JsonOptions);
         });
 
+        app.MapPost("/api/moss/plugin/edit/install", async (CancellationToken ct) =>
+        {
+            string message = await moss.InstallEditPluginAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok = moss.EditPlugin.State == "done", message, state = moss.EditPlugin.State }, JsonOptions);
+        });
+
+        app.MapPost("/api/moss/plugin/edit/deps", async (CancellationToken ct) =>
+        {
+            string message = await moss.InstallEditDepsAsync(ct).ConfigureAwait(false);
+            return Results.Json(new { ok = moss.EditPlugin.State == "done", message, state = moss.EditPlugin.State }, JsonOptions);
+        });
+
         app.MapPost("/api/moss/generate", async (CancellationToken ct) =>
         {
             (bool ok, string message) = await moss.GenerateAsync(ct).ConfigureAwait(false);
@@ -1097,6 +1110,42 @@ public static class Program
             }
 
             return Results.File(path, "image/png");
+        });
+
+        // 参考图缩略图——面板要把用户选的本地图片显示成卡片；只放行图片扩展名
+        app.MapGet("/api/moss/ref-image", (string? path) =>
+        {
+            string full = path ?? "";
+            if (full.Length == 0 || !System.IO.File.Exists(full))
+            {
+                return Results.NotFound();
+            }
+
+            string ext = System.IO.Path.GetExtension(full).ToLowerInvariant();
+            string mime = "";
+            if (ext == ".png")
+            {
+                mime = "image/png";
+            }
+            else if (ext == ".jpg" || ext == ".jpeg")
+            {
+                mime = "image/jpeg";
+            }
+            else if (ext == ".webp")
+            {
+                mime = "image/webp";
+            }
+            else if (ext == ".bmp")
+            {
+                mime = "image/bmp";
+            }
+
+            if (mime.Length == 0)
+            {
+                return Results.NotFound();
+            }
+
+            return Results.File(full, mime);
         });
 
         app.MapPost("/api/moss/open-out", () =>

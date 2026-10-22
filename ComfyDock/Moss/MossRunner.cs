@@ -14,7 +14,7 @@ namespace ComfyDock.Moss;
 /// <summary>一次生成的全部参数（面板上的那一屏，原样落到节点图）。</summary>
 public sealed class MossGenParams
 {
-    /// <summary>模型组织方式：single（单文件三件套）/ hf（diffusers 目录，走 HF Loader）。</summary>
+    /// <summary>模型组织方式：single（单文件三件套）/ hf（diffusers 目录，走 HF Loader）/ edit（图像编辑插件）。</summary>
     public string Mode { get; set; } = "single";
 
     /// <summary>主模型文件名（diffusion_models 下）。</summary>
@@ -91,6 +91,18 @@ public sealed class MossGenParams
 
     /// <summary>图生图重绘幅度。</summary>
     public double ImgDenoise { get; set; } = 0.6;
+
+    /// <summary>编辑模式：参考图文件名（ComfyUI input 目录内，1..4 张，按 reference_1..4 顺序接）。</summary>
+    public List<string> RefImages { get; set; } = new List<string>();
+
+    /// <summary>编辑模式：diffusers 快照绝对路径（编辑插件的 snapshot_dir）。</summary>
+    public string SnapshotDir { get; set; } = "";
+
+    /// <summary>编辑模式：编辑 LoRA 目录绝对路径（编辑插件的 adapter_dir）。</summary>
+    public string AdapterDir { get; set; } = "";
+
+    /// <summary>编辑模式：参考图长边上限（缩到它、16 对齐、不裁剪；官方默认 512）。</summary>
+    public int RefMaxEdge { get; set; } = 512;
 }
 
 /// <summary>生成任务状态（面板轮询它）。</summary>
@@ -353,6 +365,12 @@ public sealed class MossRunner
     /// <returns>API 格式的节点图。</returns>
     public static JsonObject BuildGraph(MossGenParams p)
     {
+        // 编辑走另一张图——它只有两个插件节点 + 参考图，没有采样器 / latent / LoRA 那些环节
+        if (string.Equals(p.Mode, "edit", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildEditGraph(p);
+        }
+
         var graph = new JsonObject();
         JsonArray modelRef;
         JsonArray clipRef;
@@ -543,6 +561,90 @@ public sealed class MossRunner
             ["images"] = new JsonArray(imageRef, 0),
         }, "保存图片");
 
+        return graph;
+    }
+
+    /// <summary>
+    /// 构造图像编辑节点图——编辑插件的两个节点：Loader（底模目录 + LoRA 目录）→ 1..4 张参考图 →
+    /// <c>MossImageEdit</c> → SaveImage。参考图按 <c>reference_1..4</c> 顺序接，没接的输入不出现
+    /// （插件自己过滤 None）；提示词里用 image 1 / image 2 指代第几张。
+    /// </summary>
+    /// <param name="p">参数。</param>
+    /// <returns>API 格式的节点图。</returns>
+    private static JsonObject BuildEditGraph(MossGenParams p)
+    {
+        if (p.RefImages.Count == 0)
+        {
+            throw new InvalidOperationException("图像编辑至少要一张参考图（reference_1 必填）");
+        }
+
+        var graph = new JsonObject();
+        graph["1"] = Node("MossImageEditLoader", new JsonObject
+        {
+            ["snapshot_dir"] = p.SnapshotDir,
+            ["adapter_dir"] = p.AdapterDir,
+        }, "MOSS 编辑底模 + LoRA");
+
+        // [段1] 参考图按顺序编号——插件靠 RoPE 的时间轴区分第几张，顺序即 image 1..4
+        var references = new List<string>();
+        foreach (string image in p.RefImages)
+        {
+            if (image.Length == 0)
+            {
+                continue;
+            }
+
+            int index = references.Count + 1;
+            string nodeId = (40 + index).ToString(CultureInfo.InvariantCulture);
+            graph[nodeId] = Node("LoadImage", new JsonObject
+            {
+                ["image"] = image,
+            }, "参考图 " + index.ToString(CultureInfo.InvariantCulture));
+            references.Add(nodeId);
+        }
+
+        if (references.Count == 0)
+        {
+            throw new InvalidOperationException("图像编辑的参考图都是空路径——检查配置里的参考图清单");
+        }
+
+        var editInputs = new JsonObject
+        {
+            ["model"] = new JsonArray("1", 0),
+            ["reference_1"] = new JsonArray(references[0], 0),
+            ["prompt"] = p.Prompt,
+            ["negative_prompt"] = p.Negative,
+            ["width"] = p.Width,
+            ["height"] = p.Height,
+            ["steps"] = p.Steps,
+            ["cfg"] = p.Cfg,
+            ["seed"] = p.Seed,
+            ["reference_max_edge"] = p.RefMaxEdge,
+            ["inference_shift"] = p.Shift,
+        };
+
+        // [段2] 可选的 reference_2..4——接几张就填几个，多余的留给插件当 None
+        if (references.Count > 1)
+        {
+            editInputs["reference_2"] = new JsonArray(references[1], 0);
+        }
+
+        if (references.Count > 2)
+        {
+            editInputs["reference_3"] = new JsonArray(references[2], 0);
+        }
+
+        if (references.Count > 3)
+        {
+            editInputs["reference_4"] = new JsonArray(references[3], 0);
+        }
+
+        graph["2"] = Node("MossImageEdit", editInputs, "MOSS 图像编辑");
+        graph["3"] = Node("SaveImage", new JsonObject
+        {
+            ["filename_prefix"] = "mossdock/edit",
+            ["images"] = new JsonArray("2", 0),
+        }, "保存图片");
         return graph;
     }
 

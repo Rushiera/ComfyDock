@@ -291,6 +291,33 @@
       border: 1px solid var(--line); border-radius: 8px; background: #fff;
     }
 
+    /* 参考图卡片：点整格选图，选完显示缩略图；鼠标移上去右上角出现 × */
+    .moss-refs { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; }
+
+    .moss-ref {
+      position: relative; width: 96px; height: 96px; border: 1px dashed var(--line);
+      border-radius: 8px; background: #fff; cursor: pointer; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; text-align: center;
+    }
+
+    .moss-ref:hover { border-color: var(--brand); }
+
+    .moss-ref img { width: 100%; height: 100%; object-fit: cover; display: none; }
+
+    .moss-ref.on img { display: block; }
+
+    .moss-ref.on .moss-ref-hint { display: none; }
+
+    .moss-ref-hint { font-size: 11px; color: #8a949e; padding: 0 6px; line-height: 1.3; }
+
+    .moss-ref-x {
+      position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; padding: 0;
+      border: none; border-radius: 50%; background: rgba(0, 0, 0, 0.55); color: #fff;
+      font-size: 13px; line-height: 18px; cursor: pointer; display: none;
+    }
+
+    .moss-ref.on:hover .moss-ref-x { display: block; }
+
     /* 本地生成：生成器页签（每个生成功能一个）+ 生成器内的子签（参数与出图 / 环境与依赖） */
     .gen-tabs { display: flex; gap: 6px; margin: 2px 0 10px; flex-wrap: wrap; }
 
@@ -404,6 +431,33 @@
               <div class="moss-form">
                 <textarea id="mossPrompt" class="ws-prompt" title="想画什么。自然语言描述 / Danbooru 标签串 / 官方 Layout JSON 都可以直接粘进来（粘 JSON 时宽高必须和 JSON 画布一致）" placeholder="正向提示词：自然语言 / Danbooru 标签 / 官方 Layout JSON 都可以"></textarea>
                 <textarea id="mossNegative" class="ws-prompt" style="min-height:38px" title="不想出现的内容。官方推荐留空；CFG = 1（8 步加速）时它完全不生效" placeholder="负向提示词（官方推荐留空）"></textarea>
+                <div class="moss-refs" id="mossRefs">
+                  <div class="moss-ref" data-moss-ref="1" title="点这里选图——填了参考图就走图像编辑（编辑插件 + diffusers 底模）">
+                    <img alt="">
+                    <span class="moss-ref-hint">＋ 参考图 1</span>
+                    <button class="moss-ref-x" data-moss-ref-clear="1" title="清空这张">×</button>
+                  </div>
+                  <div class="moss-ref" data-moss-ref="2" title="点这里选图（可选）">
+                    <img alt="">
+                    <span class="moss-ref-hint">＋ 参考图 2</span>
+                    <button class="moss-ref-x" data-moss-ref-clear="2" title="清空这张">×</button>
+                  </div>
+                  <div class="moss-ref" data-moss-ref="3" title="点这里选图（可选）">
+                    <img alt="">
+                    <span class="moss-ref-hint">＋ 参考图 3</span>
+                    <button class="moss-ref-x" data-moss-ref-clear="3" title="清空这张">×</button>
+                  </div>
+                  <div class="moss-ref" data-moss-ref="4" title="点这里选图（可选）">
+                    <img alt="">
+                    <span class="moss-ref-hint">＋ 参考图 4</span>
+                    <button class="moss-ref-x" data-moss-ref-clear="4" title="清空这张">×</button>
+                  </div>
+                </div>
+                <div class="moss-line">
+                  <label title="参考图长边上限：官方 512。调大保留更多细节，但更慢更吃显存">参考长边</label>
+                  <input type="number" id="mossRefMaxEdge" step="16" min="16" max="2048" title="官方 512；16 的倍数，缩到它、不裁剪">
+                  <span class="path">填了参考图 = 图像编辑（官方口径：步数 30 · CFG 4 · Shift 5；提示词里用 image 1 / image 2 指代第几张）</span>
+                </div>
                 <div class="moss-line">
                   <label title="决定用哪套权重：int8 省显存 / bf16 质量最好 / base 训 LoRA / diffusers 兜底">方案</label><select id="mossPlan" class="wide" title="int8 = 10–18 G 显存首选（峰值约 8.7 G）；bf16 = ≥18 G 才用（峰值约 15 G）；base = 训 LoRA 用，别配 8 步加速；diffusers = 官方目录版兜底（约 27 G）"></select>
                   <label title="引擎启动参数，改完要点右边（环境与依赖里）的「按显存模式重启引擎」才生效">显存模式</label>
@@ -462,6 +516,7 @@
                     <div class="moss-help-item"><b>8 步加速（DMD）</b>（默认关）——挂蒸馏 LoRA，把 50 步的行为压到 8 步，速度快约 4–6 倍。<br>开了必须配套：<b>步数 8、CFG 1</b>（否则出色块 / 过曝），此时负向提示词失效。<br>只配 SFT（含 int8 压缩版）；<b>配 base 会出色块</b>。<br>质量代价：密集小字、细密纹理这类极端细节略弱于 50 步官方口径；日常出图看不出差别。</div>
                     <div class="moss-help-item"><b>结构增强（SLG）</b>（默认开）——负向分支跳过第 22 层（0 起算），让结构和手更稳，官方推荐开。<br>· 关掉：更快（省掉一路计算），但手 / 肢体 / 结构崩坏概率上升。<br>· 换层数（如 18 / 26）：等于换「在哪一层做引导」；越靠后越只影响细节，越靠前越影响大形。一般不需要动。<br>· 与 Shift 共用阈值基准，改 Shift 会连带改变它的实际效果。</div>
                     <div class="moss-help-item"><b>Hires 第二遍</b>（默认关）——先出小图，再像素放大（Lanczos）后以较低重绘幅度采样一遍，用来加细节、去小图噪点。<br>为什么必须走像素放大：MOSS 的 latent 是 128 通道（Flux.2 格式），不能像普通 4 通道 latent 那样直接插值放大。<br>· <em>倍率</em>（默认 1.5）：1.5 = 边长 ×1.5（1024 → 1536）；越大越清晰也越慢越吃显存（面积按平方涨）。<br>· <em>重绘</em>（默认 0.5）：0.5 = 改一半；0.3 更接近原图但细节加得少；0.8 变化大但容易跑偏（人物走形）。<br>代价：总耗时 ≈ 第一遍 + 第二遍，8 G 卡上 1024×1024 开 Hires 要按分钟算。</div>
+                    <div class="moss-help-item"><b>参考图（图像编辑）</b>——四格里放了图就走图像编辑（编辑插件 + diffusers 底模），空着就是文生图，不用另选模式。<br>· <em>提示词</em>：写「要改什么」，用 image 1 / image 2 指代第几张（例：Dress the person in image 1 in the outfit from image 2.）。<br>· <em>参考图比例</em>：接近方形最好；极端宽幅（实测 2608×1200）缩到 512 长边后只剩 512×240，人物细节会丢。<br>· <em>参考长边</em>（默认 512）：缩到它、16 对齐、不裁剪；调大保留细节但更慢更吃显存。<br>· <em>官方口径</em>：步数 30 · CFG 4 · Shift 5（第一次放参考图会自动把 50/3 切过来）。<br>· <em>8 步加速</em>：可以勾，DMD 会并进底模（只走内置通道）；CFG 建议 1——实测 CFG 1 细节略糊、CFG 4 过曝，总耗时只快约 40%（大头在 27 G 权重搬运，不在采样）。<br>· <em>显存</em>：512×512 / 30 步实测峰值 7.1 G（8 G 卡刚够）。</div>
                   </div>
                 </details>
               </div>
@@ -478,6 +533,8 @@
             <div class="sub-head">
               <button class="btn-mini" id="mossReload">重新检测</button>
               <button class="btn-mini" id="mossInstall" title="把 OpenMOSS/MOSS-Image 仓库里的 comfyui/moss-image 装进 custom_nodes">安装插件</button>
+              <button class="btn-mini" id="mossInstallEdit" title="装图像编辑插件（Chenkin-x/ComfyUI-Moss-Image-Edit）到 custom_nodes">装编辑插件</button>
+              <button class="btn-mini" id="mossInstallEditDeps" title="装编辑插件要的 Python 依赖：diffusers>=0.38 / accelerate>=1.13 / optimum-quanto==0.2.7（不碰 transformers，不降级）">装编辑依赖</button>
               <button class="btn-mini" id="mossOpenOut">打开产物目录</button>
               <button class="btn-mini" id="mossEngineRestart" title="按选中的显存模式重启本机 ComfyUI（会结束该安装目录下的引擎进程）">按显存模式重启引擎</button>
               <span class="spacer"></span>
@@ -2740,6 +2797,33 @@
       document.getElementById("mossAccel").checked = !!cfg.accel;
       document.getElementById("mossSlg").checked = cfg.slg !== false;
       document.getElementById("mossHires").checked = !!cfg.hires;
+
+      // 参考图卡片（v0.47）——填了图就是图像编辑，空着就是文生图
+      set("mossRefMaxEdge", cfg.refMaxEdge || 512);
+      fillMossRefs(cfg.refImages || []);
+    }
+
+    function fillMossRefs(refs) {
+      for (const slot of document.querySelectorAll("#mossRefs .moss-ref")) {
+        const index = Number(slot.getAttribute("data-moss-ref"));
+        const path = refs[index - 1] || "";
+        slot.dataset.path = path;
+        slot.classList.toggle("on", path.length > 0);
+        const img = slot.querySelector("img");
+        if (path.length > 0) {
+          img.src = "/api/moss/ref-image?path=" + encodeURIComponent(path) + "&t=" + Date.now();
+        } else {
+          img.removeAttribute("src");
+        }
+      }
+    }
+
+    function mossRefSlots() {
+      const out = ["", "", "", ""];
+      for (const slot of document.querySelectorAll("#mossRefs .moss-ref")) {
+        out[Number(slot.getAttribute("data-moss-ref")) - 1] = slot.dataset.path || "";
+      }
+      return out;
     }
 
     function renderMoss() {
@@ -2758,6 +2842,12 @@
         + rhText(env.kernelVersion || "未知") + (env.flux2Ok ? " · 支持 Flux.2" : " · 缺 Flux.2 支持") + "</span></div>");
       rows.push('<div class="rh-item"><span class="grow">MOSS 插件</span><span class="' + (env.pluginLoaded ? "" : "rh-bad") + '">'
         + (env.pluginLoaded ? "已加载" : (env.pluginFilesOk ? "文件在位，未加载" : "未安装")) + "</span></div>");
+      rows.push('<div class="rh-item"><span class="grow">图像编辑插件</span><span class="' + (env.editPluginLoaded ? "" : "rh-bad") + '">'
+        + (env.editPluginLoaded ? "已加载" : (env.editPluginFilesOk ? "文件在位，未加载" : "未安装")) + "</span></div>");
+      rows.push('<div class="rh-item"><span class="grow">编辑 LoRA / diffusers 底模</span><span class="'
+        + ((env.editAdapterOk && env.hfSnapshotOk) ? "" : "rh-bad") + '">'
+        + (env.editAdapterOk ? "LoRA 在位" : "LoRA 缺") + " · " + (env.hfSnapshotOk ? "底模可用" : "底模缺")
+        + "</span></div>");
       rows.push('<div class="rh-item"><span class="grow">显卡 / 内存 / 盘余</span><span>'
         + rhText(env.gpuName || "未知") + " · " + Math.round((env.vramMb || 0) / 1024) + "G 显存 · "
         + Math.round((env.ramMb || 0) / 1024) + "G 内存 · " + mossBytes(env.diskFreeBytes) + " 可用</span></div>");
@@ -2769,6 +2859,15 @@
       const blockers = env.blockers || [];
       for (const b of blockers) {
         rows.push('<div class="rh-item"><span class="grow rh-bad">⚠ ' + rhText(b) + "</span></div>");
+      }
+
+      const editBlockers = env.editBlockers || [];
+      for (const b of editBlockers) {
+        rows.push('<div class="rh-item"><span class="grow rh-bad">⚠ 编辑：' + rhText(b) + "</span></div>");
+      }
+
+      if (mossData.editPlugin && mossData.editPlugin.message) {
+        rows.push('<div class="rh-item"><span class="grow rh-dim">编辑插件安装：' + rhText(mossData.editPlugin.message) + "</span></div>");
       }
 
       if (mossData.plugin && mossData.plugin.message) {
@@ -2875,7 +2974,10 @@
         hiresScale: mossNum("mossHiresScale", 1.5),
         hiresDenoise: mossNum("mossHiresDenoise", 0.5),
         inputImage: cfg.inputImage || "",
-        imgDenoise: cfg.imgDenoise === undefined ? 0.6 : cfg.imgDenoise
+        imgDenoise: cfg.imgDenoise === undefined ? 0.6 : cfg.imgDenoise,
+        genMode: mossRefSlots().filter(v => v.length > 0).length > 0 ? "edit" : "t2i",
+        refImages: mossRefSlots().filter(v => v.length > 0),
+        refMaxEdge: mossNum("mossRefMaxEdge", 512)
       };
     }
 
@@ -2925,6 +3027,22 @@
       await loadMoss();
     }
 
+    async function mossInstallEdit() {
+      toast("开始装图像编辑插件（Chenkin-x/ComfyUI-Moss-Image-Edit）…");
+      const data = await rhPost("/api/moss/plugin/edit/install", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      await loadMoss();
+    }
+
+    async function mossInstallEditDeps() {
+      toast("开始装编辑依赖（diffusers / accelerate / optimum-quanto，可能要几分钟）…");
+      const data = await rhPost("/api/moss/plugin/edit/deps", {});
+      if (!data) { return; }
+      toast((data.ok ? "✅ " : "❌ ") + (data.message || ""));
+      await loadMoss();
+    }
+
     // 只在 MOSS 页签且确实有在途任务时轮询，别在后台白转
     function startMossPoller() {
       if (mossTimer) { return; }
@@ -2941,6 +3059,7 @@
             mossData.job = live.job;
             mossData.downloads = live.downloads;
             mossData.plugin = live.plugin;
+            mossData.editPlugin = live.editPlugin;
             mossData.local = live.local;
           }
           renderMossLive();
@@ -4564,6 +4683,58 @@
     document.getElementById("mossSeedRandom").onclick = () => {
       document.getElementById("mossSeed").value = -1;
       toast("种子已设为随机（每次生成都不同）");
+    };
+    document.getElementById("mossAccel").onchange = () => {
+      const edit = mossRefSlots().filter(v => v.length > 0).length > 0;
+      const accel = document.getElementById("mossAccel").checked;
+      if (edit && accel) {
+        const cfg = document.getElementById("mossCfg");
+        if (Number(cfg.value) > 1.5) {
+          cfg.value = 1;
+          toast("编辑 + 8 步加速：CFG 已设为 1（实测 CFG 4 会过曝）——这条只走内置通道");
+        } else {
+          toast("编辑 + 8 步加速：DMD 并进底模，比 30 步快约 40%");
+        }
+      }
+    };
+    document.getElementById("mossInstallEdit").onclick = mossInstallEdit;
+    document.getElementById("mossInstallEditDeps").onclick = mossInstallEditDeps;
+    document.getElementById("mossRefs").onclick = async (ev) => {
+      const clearBtn = ev.target.closest("[data-moss-ref-clear]");
+      if (clearBtn) {
+        ev.stopPropagation();
+        const card = clearBtn.closest(".moss-ref");
+        card.dataset.path = "";
+        card.classList.remove("on");
+        card.querySelector("img").removeAttribute("src");
+        await mossSave(true);
+        toast("已清空参考图 " + clearBtn.getAttribute("data-moss-ref"));
+        return;
+      }
+
+      const target = ev.target.closest(".moss-ref");
+      if (!target) { return; }
+      const data = await rhPost("/api/rh/pick", { kind: "image" });
+      if (!data || !data.ok) { toast("选择失败：" + ((data && data.error) || "未知")); return; }
+      if (!data.path) { toast("没有选东西"); return; }
+      const index = Number(target.getAttribute("data-moss-ref"));
+      const slots = mossRefSlots();
+      slots[index - 1] = data.path;
+      fillMossRefs(slots);
+
+      // 第一次放参考图：把文生图默认的 50/3 切成编辑口径 30/4（只在用户没动过时切）
+      if (slots.filter(v => v.length > 0).length === 1) {
+        const steps = document.getElementById("mossSteps");
+        const cfg = document.getElementById("mossCfg");
+        if (Number(steps.value) === 50 && Number(cfg.value) === 3) {
+          steps.value = 30;
+          cfg.value = 4;
+          toast("已切到编辑口径：步数 30 · CFG 4");
+        }
+      }
+
+      await mossSave(true);
+      toast("参考图 " + index + " 已选：" + data.path);
     };
     document.getElementById("mossReload").onclick = loadMoss;
     document.getElementById("mossInstall").onclick = mossInstall;

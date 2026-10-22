@@ -75,6 +75,24 @@ public sealed class MossEnvSnapshot
     /// <summary>能否出图——内核支持 + 插件在位（在跑时还要求已加载）。</summary>
     public bool CanGenerate { get; set; }
 
+    /// <summary>图像编辑插件文件是否在位（custom_nodes\ComfyUI-Moss-Image-Edit）。</summary>
+    public bool EditPluginFilesOk { get; set; }
+
+    /// <summary>图像编辑插件是否已被内核加载（/object_info 里有 MossImageEditLoader）。</summary>
+    public bool EditPluginLoaded { get; set; }
+
+    /// <summary>编辑 LoRA 两件是否在位（adapter_model.safetensors + adapter_config.json）。</summary>
+    public bool EditAdapterOk { get; set; }
+
+    /// <summary>diffusers 底模是否是可用的编辑快照（目录里有 pipeline_moss_image.py 与 scheduler）。</summary>
+    public bool HfSnapshotOk { get; set; }
+
+    /// <summary>编辑链路能否出图——编辑插件 + LoRA + diffusers 快照（在跑时还要求插件已加载）。</summary>
+    public bool CanEdit { get; set; }
+
+    /// <summary>编辑链路的前置条件说明（逐条具名，不静默）。</summary>
+    public List<string> EditBlockers { get; set; } = new List<string>();
+
     /// <summary>前置条件说明（逐条具名，不静默）。</summary>
     public List<string> Blockers { get; set; } = new List<string>();
 
@@ -126,6 +144,12 @@ public sealed class MossEnv
     /// <summary>官方完整目录方案（HF Loader）的落点根。</summary>
     public string HfRoot => Path.Combine(ModelsRoot, "MOSS-Image");
 
+    /// <summary>图像编辑插件目录（Chenkin-x/ComfyUI-Moss-Image-Edit）。</summary>
+    public string EditPluginDir => Path.Combine(CustomNodesRoot, "ComfyUI-Moss-Image-Edit");
+
+    /// <summary>图像编辑 LoRA 的落点根（models\Moss-Image-Edit）。</summary>
+    public string EditAdapterRoot => Path.Combine(ModelsRoot, "Moss-Image-Edit");
+
     /// <summary>某个索引条目的落盘完整路径。</summary>
     /// <param name="file">索引条目。</param>
     /// <returns>完整路径。</returns>
@@ -137,6 +161,7 @@ public sealed class MossEnv
             MossTarget.TextEncoders => Path.Combine(ModelsRoot, "text_encoders"),
             MossTarget.Vae => Path.Combine(ModelsRoot, "vae"),
             MossTarget.Loras => Path.Combine(ModelsRoot, "loras"),
+            MossTarget.MossEditAdapter => EditAdapterRoot,
             _ => HfRoot,
         };
 
@@ -165,6 +190,10 @@ public sealed class MossEnv
         snap.KernelVersion = ReadKernelVersion();
         snap.Flux2Ok = DetectFlux2();
         snap.PluginFilesOk = File.Exists(Path.Combine(PluginDir, "__init__.py"));
+        snap.EditPluginFilesOk = File.Exists(Path.Combine(EditPluginDir, "__init__.py"));
+        snap.EditAdapterOk = File.Exists(Path.Combine(EditAdapterRoot, "adapter_model.safetensors"))
+            && File.Exists(Path.Combine(EditAdapterRoot, "adapter_config.json"));
+        snap.HfSnapshotOk = IsEditSnapshot(Path.Combine(HfRoot, "MOSS-Image-SFT"));
 
         // [段2] 硬件侧：显卡 / 内存 / 磁盘余量
         (snap.GpuName, snap.VramMb) = ReadGpu();
@@ -176,6 +205,7 @@ public sealed class MossEnv
         if (snap.Running)
         {
             snap.PluginLoaded = await HasNodeAsync("MOSSImageUNETLoader", ct).ConfigureAwait(false);
+            snap.EditPluginLoaded = await HasNodeAsync("MossImageEditLoader", ct).ConfigureAwait(false);
             bool latentNode = await HasNodeAsync("EmptyFlux2LatentImage", ct).ConfigureAwait(false);
             if (latentNode)
             {
@@ -231,6 +261,37 @@ public sealed class MossEnv
         }
 
         snap.CanGenerate = snap.Flux2Ok && snap.PluginFilesOk && (!snap.Running || snap.PluginLoaded);
+
+        // [段6] 图像编辑链路——与文生图分开判定：它只吃 diffusers 快照 + 编辑插件 + 编辑 LoRA
+        if (!snap.Flux2Ok)
+        {
+            snap.EditBlockers.Add("ComfyUI 内核缺 Flux.2 支持——编辑链与文生图共用同一份 VAE 与 latent 口径，内核太旧跑不起来");
+        }
+
+        if (!snap.EditPluginFilesOk)
+        {
+            snap.EditBlockers.Add("图像编辑插件未安装（custom_nodes\\ComfyUI-Moss-Image-Edit 不存在）——点「装编辑插件」");
+        }
+        else if (snap.Running && !snap.EditPluginLoaded)
+        {
+            snap.EditBlockers.Add("图像编辑插件文件在位但内核没加载它——重启 ComfyUI 后重新检测"
+                + "（插件 import 失败通常是 Python 依赖没装：diffusers 0.38+ / optimum-quanto）");
+        }
+
+        if (!snap.HfSnapshotOk)
+        {
+            snap.EditBlockers.Add("diffusers 底模没下齐（缺 " + Path.Combine(HfRoot, "MOSS-Image-SFT")
+                + " 下的 pipeline_moss_image.py 或 scheduler）——编辑链只吃 diffusers 目录，单文件主模型没有参考图通路");
+        }
+
+        if (!snap.EditAdapterOk)
+        {
+            snap.EditBlockers.Add("编辑 LoRA 不在位（缺 " + EditAdapterRoot
+                + " 下的 adapter_model.safetensors / adapter_config.json）");
+        }
+
+        snap.CanEdit = snap.Flux2Ok && snap.EditPluginFilesOk && snap.HfSnapshotOk && snap.EditAdapterOk
+            && (!snap.Running || snap.EditPluginLoaded);
         return snap;
     }
 
@@ -289,6 +350,19 @@ public sealed class MossEnv
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 磁盘判定某个目录是不是可用的编辑快照——编辑插件要求 snapshot 目录里同时有
+    /// <c>pipeline_moss_image.py</c>（它按文件路径 import）与 <c>scheduler\scheduler_config.json</c>（采样器按目录读）。
+    /// </summary>
+    /// <param name="snapshotDir">候选目录。</param>
+    /// <returns>可用返回 true。</returns>
+    private static bool IsEditSnapshot(string snapshotDir)
+    {
+        return File.Exists(Path.Combine(snapshotDir, "pipeline_moss_image.py"))
+            && File.Exists(Path.Combine(snapshotDir, "scheduler", "scheduler_config.json"))
+            && File.Exists(Path.Combine(snapshotDir, "transformer", "config.json"));
     }
 
     /// <summary>用 nvidia-smi 读显卡名与显存。</summary>

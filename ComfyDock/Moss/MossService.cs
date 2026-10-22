@@ -82,6 +82,13 @@ public sealed class MossConfig
 
     /// <summary>图生图重绘幅度。</summary>
     public double ImgDenoise { get; set; } = 0.6;
+
+    /// <summary>参考图完整路径（1..4 张，顺序即 image 1..4）——有图即图像编辑，空着即文生图。</summary>
+    public List<string> RefImages { get; set; } = new List<string>();
+
+    /// <summary>参考图长边上限（缩到它、16 对齐、不裁剪；官方 512）。</summary>
+    public int RefMaxEdge { get; set; } = 512;
+
 }
 
 /// <summary>插件安装状态。</summary>
@@ -130,6 +137,9 @@ public sealed class MossService
     /// <summary>插件安装状态。</summary>
     private MossPluginState _plugin = new MossPluginState();
 
+    /// <summary>图像编辑插件的安装状态（与主插件分开——两条安装链各自独立）。</summary>
+    private MossPluginState _editPlugin = new MossPluginState();
+
     /// <summary>轮询是否已被要求停止。</summary>
     private bool _stopPoll;
     /// <summary>内置推理引擎——ComfyUI 没在跑时走这条，用它的解释器与模型，但不启它的服务。</summary>
@@ -163,6 +173,7 @@ public sealed class MossService
         _config = LoadConfig();
         _downloader.Start();
         _plugin.Dir = _env.PluginDir;
+        _editPlugin.Dir = _env.EditPluginDir;
     }
 
     /// <summary>产物落点目录。</summary>
@@ -170,6 +181,9 @@ public sealed class MossService
 
     /// <summary>插件安装状态。</summary>
     public MossPluginState Plugin => _plugin;
+
+    /// <summary>图像编辑插件的安装状态。</summary>
+    public MossPluginState EditPlugin => _editPlugin;
 
     /// <summary>当前任务状态（拷贝，防外部改）。</summary>
     /// <returns>任务状态副本。</returns>
@@ -276,6 +290,12 @@ public sealed class MossService
                 diskFreeBytes = env.DiskFreeBytes,
                 canGenerate = env.CanGenerate,
                 blockers = env.Blockers,
+                editPluginFilesOk = env.EditPluginFilesOk,
+                editPluginLoaded = env.EditPluginLoaded,
+                editAdapterOk = env.EditAdapterOk,
+                hfSnapshotOk = env.HfSnapshotOk,
+                canEdit = env.CanEdit,
+                editBlockers = env.EditBlockers,
                 checkedAt = env.CheckedAt,
             },
             recommendPlan = MossCatalog.RecommendPlan(env.VramMb),
@@ -285,6 +305,7 @@ public sealed class MossService
             downloads = jobs,
             job = Job(),
             plugin = _plugin,
+            editPlugin = _editPlugin,
             local = _local.State,
             outDir = _outDir,
             loras = ListModels("loras", "*.safetensors"),
@@ -336,6 +357,8 @@ public sealed class MossService
             _config.HiresDenoise = Clamp(next.HiresDenoise, 0.05, 1.0);
             _config.InputImage = next.InputImage;
             _config.ImgDenoise = Clamp(next.ImgDenoise, 0.05, 1.0);
+            _config.RefImages = new List<string>(next.RefImages);
+            _config.RefMaxEdge = Clamp(next.RefMaxEdge, 16, 4096);
             SaveConfig();
             return _config;
         }
@@ -408,6 +431,45 @@ public sealed class MossService
         return _downloader.Cancel(fileId);
     }
 
+    /// <summary>装图像编辑插件（Chenkin-x/ComfyUI-Moss-Image-Edit）——整包解到 custom_nodes。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>说明。</returns>
+    public async Task<string> InstallEditPluginAsync(CancellationToken ct)
+    {
+        _editPlugin.State = "downloading";
+        _editPlugin.Message = "开始装图像编辑插件…";
+        try
+        {
+            return await MossPlugin.InstallEditAsync(_env, _editPlugin, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException || ex is IOException
+            || ex is InvalidOperationException || ex is OperationCanceledException)
+        {
+            _editPlugin.State = "error";
+            _editPlugin.Message = "装编辑插件失败：" + ex.Message;
+            return _editPlugin.Message;
+        }
+    }
+
+    /// <summary>装图像编辑插件的 Python 依赖（不碰 transformers——理由见 MossPlugin 的说明）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>说明。</returns>
+    public async Task<string> InstallEditDepsAsync(CancellationToken ct)
+    {
+        _editPlugin.State = "deps";
+        _editPlugin.Message = "开始装编辑依赖…";
+        try
+        {
+            return await MossPlugin.InstallEditDepsAsync(_env, _editPlugin, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException || ex is InvalidOperationException || ex is OperationCanceledException)
+        {
+            _editPlugin.State = "error";
+            _editPlugin.Message = "装编辑依赖失败：" + ex.Message;
+            return _editPlugin.Message;
+        }
+    }
+
     /// <summary>装 MOSS 插件（下载仓库 zip → 只解 comfyui/moss-image → 顺带放一份示例工作流）。</summary>
     /// <param name="ct">取消令牌。</param>
     /// <returns>说明。</returns>
@@ -447,7 +509,15 @@ public sealed class MossService
     public async Task<(bool Ok, string Message)> GenerateAsync(CancellationToken ct)
     {
         MossEnvSnapshot env = await _env.ProbeAsync(ct).ConfigureAwait(false);
-        if (!env.CanGenerate)
+        if (IsEditMode())
+        {
+            if (!env.CanEdit)
+            {
+                string editReason = env.EditBlockers.Count > 0 ? env.EditBlockers[0] : "编辑链路前置条件不足";
+                return (false, editReason);
+            }
+        }
+        else if (!env.CanGenerate)
         {
             string reason = env.Blockers.Count > 0 ? env.Blockers[0] : "前置条件不足";
             return (false, reason);
@@ -640,6 +710,44 @@ public sealed class MossService
             ImgDenoise = _config.ImgDenoise,
         };
 
+        // 编辑模式：走编辑插件的两个节点——底模固定为 diffusers 快照，参考图先拷进 ComfyUI 的 input
+        if (IsEditMode())
+        {
+            p.Mode = "edit";
+            p.SnapshotDir = Path.Combine(_env.HfRoot, "MOSS-Image-SFT");
+            p.AdapterDir = _env.EditAdapterRoot;
+            // 勾了 8 步加速：DMD 由内置引擎并进底模（环境变量），步数压到 8；
+            // CFG 用面板值——实测 CFG 1 细节略糊、CFG 4 会过曝（2026-10-22 三档对比）
+            p.Steps = _config.Accel ? 8 : _config.Steps;
+            p.Cfg = _config.Cfg;
+            p.Shift = _config.Shift;
+            p.RefMaxEdge = _config.RefMaxEdge;
+
+            foreach (string image in _config.RefImages)
+            {
+                if (image.Length == 0)
+                {
+                    continue;
+                }
+
+                string staged = MossRunner.StageImage(image, _inputDir);
+                if (staged.Length == 0)
+                {
+                    error = "参考图读不到：" + image;
+                    return p;
+                }
+
+                p.RefImages.Add(staged);
+            }
+
+            if (p.RefImages.Count == 0)
+            {
+                error = "图像编辑至少要一张参考图（reference_1 必填）";
+            }
+
+            return p;
+        }
+
         MossPlan? plan = MossCatalog.FindPlan(_config.Plan);
         if (plan is null)
         {
@@ -708,6 +816,13 @@ public sealed class MossService
         }
 
         return p;
+    }
+
+    /// <summary>当前配置是不是图像编辑模式。</summary>
+    /// <returns>编辑模式返回 true。</returns>
+    private bool IsEditMode()
+    {
+        return _config.RefImages.Count > 0;
     }
 
     /// <summary>方案里某分类的文件名（ComfyUI 侧用的相对名）。</summary>
@@ -981,6 +1096,16 @@ public sealed class MossService
     /// <returns>无。</returns>
     private async Task RunLocalJobAsync(MossGenParams p)
     {
+        // 编辑 + 8 步加速：让 worker 把 DMD 并进底模（环境变量只在 worker 启动时读，值变了会重启 worker）
+        if (string.Equals(p.Mode, "edit", StringComparison.OrdinalIgnoreCase) && p.Accel)
+        {
+            _local.SetExtraLora(Path.Combine(_env.ModelsRoot, "loras", "MOSS", "MOSS-SFT-8step-DMD.safetensors"));
+        }
+        else
+        {
+            _local.SetExtraLora("");
+        }
+
         // 面板里 LoRA 名用正斜杠，ComfyUI 认反斜杠（内置通道问不到引擎的选项表，直接按规则换）
         p.AccelLora = p.AccelLora.Replace('/', '\\');
         p.LoraName = p.LoraName.Replace('/', '\\');

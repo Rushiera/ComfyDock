@@ -63,6 +63,9 @@ public sealed class MossLocalEngine : IDisposable
     /// <summary>当前状态。</summary>
     private MossLocalState _state = new MossLocalState();
 
+    /// <summary>额外 LoRA 路径（编辑 + 8 步加速时把 DMD 并进底模；空 = 不并）。</summary>
+    private string _extraLora = "";
+
     /// <summary>是否已释放。</summary>
     private bool _disposed;
 
@@ -150,6 +153,26 @@ public sealed class MossLocalEngine : IDisposable
         return File.Exists(_python);
     }
 
+    /// <summary>
+    /// 设置额外 LoRA（编辑链叠 8 步 DMD 用）——worker 是长驻进程，环境变量只在启动时读，
+    /// 所以值变了就停掉在跑的 worker，下次生成按新值起（停止会释放显存，不影响正确性）。
+    /// </summary>
+    /// <param name="path">LoRA 完整路径；空 = 不并。</param>
+    public void SetExtraLora(string path)
+    {
+        bool changed;
+        lock (_gate)
+        {
+            changed = !string.Equals(_extraLora, path, StringComparison.OrdinalIgnoreCase);
+            _extraLora = path;
+        }
+
+        if (changed && Alive)
+        {
+            Stop();
+        }
+    }
+
     /// <summary>确保 worker 已就绪——没起就起，起了直接返回。</summary>
     /// <param name="ct">取消令牌。</param>
     /// <returns>(是否就绪, 说明)。</returns>
@@ -203,6 +226,12 @@ public sealed class MossLocalEngine : IDisposable
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+
+        // 编辑 + 8 步加速：让插件把 DMD 并进底模（插件侧读这个环境变量，没值就跳过）
+        if (_extraLora.Length > 0)
+        {
+            psi.Environment["MOSS_EDIT_EXTRA_LORA"] = _extraLora;
+        }
 
         Process proc;
         try
