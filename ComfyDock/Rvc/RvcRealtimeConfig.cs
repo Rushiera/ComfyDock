@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 namespace ComfyDock.Rvc;
 
@@ -53,6 +54,62 @@ public sealed class RvcVitsBridgeSpec
 
     /// <summary>推理设备（cuda / cpu）。</summary>
     public string Device { get; set; } = "cuda";
+}
+
+/// <summary>
+/// 桥接用的 VITS 运行面——模型根 / 推理代码 / 推理设备 / F0 名册路径 / F0 查询，由 VitsService 提供。
+/// <para>路径与名册属「环境」，桥接的**模型与目标说话人**属 RVC 自己的配置（v0.46 起单一真相源在 RVC 页签）。</para>
+/// </summary>
+public sealed class RvcVitsRuntime
+{
+    /// <summary>VITS 模型根（ComfyUI\models\VITS）。</summary>
+    public string ModelsRoot { get; set; } = "";
+
+    /// <summary>VITS 运行目录（runtime\vits——含 vits_worker.py 与 vits_lite）。</summary>
+    public string Repo { get; set; } = "";
+
+    /// <summary>推理设备（cuda / cpu）。</summary>
+    public string Device { get; set; } = "cuda";
+
+    /// <summary>F0 名册文件路径（空 = 还没量过）。</summary>
+    public string F0Profile { get; set; } = "";
+
+    /// <summary>查某个说话人的自然 F0（模型名, 说话人索引 → Hz；缺了给 0）。</summary>
+    public Func<string, int, double>? F0Of { get; set; }
+}
+
+/// <summary>
+/// 一个 VITS 模型条目（RVC 页签的桥接下拉用）——名字 / 说话人数 / 原生采样率 / 是否可用。
+/// </summary>
+public sealed class RvcVitsModelItem
+{
+    /// <summary>模型名（文件名去后缀）。</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>分组（模型根下的一层子目录）。</summary>
+    public string Group { get; set; } = "";
+
+    /// <summary>说话人数。</summary>
+    public int Speakers { get; set; }
+
+    /// <summary>原生采样率。</summary>
+    public int SamplingRate { get; set; }
+
+    /// <summary>是否可用（.pth 与 .json 成对）。</summary>
+    public bool Ok { get; set; }
+}
+
+/// <summary>一个 VITS 说话人条目（RVC 页签的桥接下拉用）——索引 / 名字 / 自然 F0。</summary>
+public sealed class RvcVitsSpeakerItem
+{
+    /// <summary>说话人索引。</summary>
+    public int Index { get; set; }
+
+    /// <summary>名字（模型名册原文；无名则空）。</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>自然 F0（Hz；0 = 名册里还没量到）。</summary>
+    public double F0 { get; set; }
 }
 
 /// <summary>
@@ -132,6 +189,18 @@ public sealed class RvcRealtimeConfig
 
     /// <summary>桥接攒块数（1 = 每块一次推理；N = 攒 N 块一次；热更不重开流）。</summary>
     public int VcBridgeBlocks { get; set; } = 1;
+
+    /// <summary>桥接用的 VITS 模型名（模型根下 &lt;分组&gt;\&lt;名字&gt;.pth 的名字）。</summary>
+    public string VcBridgeModel { get; set; } = "";
+
+    /// <summary>桥接的目标说话人索引（出来的音色）。</summary>
+    public int VcBridgeDst { get; set; }
+
+    /// <summary>桥接自动挑原说话人（按 F0 名册挑与 RVC 输出最接近的）。</summary>
+    public bool VcBridgeAutoSrc { get; set; } = true;
+
+    /// <summary>桥接自动变调（按目标说话人的自然音域反推 f0UpKey）。</summary>
+    public bool VcBridgeAutoF0 { get; set; } = true;
 
     /// <summary>推理设备（cuda / cpu）。</summary>
     public string Device { get; set; } = "cuda";

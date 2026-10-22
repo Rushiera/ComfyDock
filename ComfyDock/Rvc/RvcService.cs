@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -1102,8 +1103,8 @@ public sealed class RvcService
     /// <summary>worker 脚本源码（线 2 的 RvcRealtimeWorkerScript 经此注入；空 = 只认盘上脚本）。</summary>
     private string _rtWorkerSource = "";
 
-    /// <summary>桥接用的 VITS 设置来源（服务层在 Program 里接到 VitsService——单一真相源，RVC 配置不另存一份）。</summary>
-    private Func<RvcVitsBridgeSpec?>? _vitsBridgeSource;
+    /// <summary>桥接要用的 VITS 运行面来源（Program 里接到 VitsService——路径 / 名册 / F0 查询）。</summary>
+    private Func<RvcVitsRuntime?>? _vitsRuntimeSource;
 
     /// <summary>VB-CABLE 端点辅助（检测驱动 / 解内置包 / 提权安装——送声给其他软件用的虚拟声卡）。</summary>
     private readonly VbCableService _vbCable;
@@ -1157,28 +1158,44 @@ public sealed class RvcService
             return CloneRealtimeConfig(_rtConfig);
         }
     }
-    /// <summary>接上桥接用的 VITS 设置来源（Program 里指向 VitsService——VITS 页签是唯一真相源）。</summary>
-    /// <param name="source">返回当前 VITS 设置的回调（null = 桥接不可用）。</param>
-    public void SetVitsBridgeSource(Func<RvcVitsBridgeSpec?> source)
+    /// <summary>接上桥接要用的 VITS 运行面来源（Program 里指向 VitsService——只出路径与名册，不出设置）。</summary>
+    /// <param name="source">返回运行面的回调（null = 桥接不可用）。</param>
+    public void SetVitsRuntimeSource(Func<RvcVitsRuntime?> source)
     {
-        _vitsBridgeSource = source;
+        _vitsRuntimeSource = source;
     }
-    /// <summary>当前桥接设置（VITS 页签的模型 / 说话人 + 这一路要用的运行目录）。</summary>
-    /// <returns>设置快照（来源没接上时返回空设置）。</returns>
+
+    /// <summary>当前桥接设置——模型 / 目标说话人 / 自动档取自 RVC 自己的配置，路径与 F0 名册取自 VITS 运行面。</summary>
+    /// <returns>设置快照（VITS 运行面没接上时返回空设置）。</returns>
     public RvcVitsBridgeSpec BridgeSpec()
     {
-        Func<RvcVitsBridgeSpec?>? source = _vitsBridgeSource;
-        if (source == null)
+        RvcRealtimeConfig cfg;
+        lock (_rtGate)
         {
-            return new RvcVitsBridgeSpec();
+            cfg = CloneRealtimeConfig(_rtConfig);
         }
 
-        RvcVitsBridgeSpec? spec = source();
-        if (spec == null)
+        var spec = new RvcVitsBridgeSpec
         {
-            return new RvcVitsBridgeSpec();
+            Model = cfg.VcBridgeModel,
+            Src = 0,
+            Dst = cfg.VcBridgeDst,
+            SrcAuto = cfg.VcBridgeAutoSrc,
+            F0Auto = cfg.VcBridgeAutoF0,
+        };
+
+        Func<RvcVitsRuntime?>? source = _vitsRuntimeSource;
+        RvcVitsRuntime? rt = source?.Invoke();
+        if (rt == null)
+        {
+            return spec;
         }
 
+        spec.ModelsRoot = rt.ModelsRoot;
+        spec.Repo = rt.Repo;
+        spec.Device = rt.Device;
+        spec.F0Profile = rt.F0Profile;
+        spec.DstF0 = rt.F0Of?.Invoke(spec.Model, spec.Dst) ?? 0;
         return spec;
     }
     /// <summary>VITS 设置变了——桥接开着且流在跑时把新设置推给 worker（换模型由 worker 下一段重载）。</summary>
@@ -1302,7 +1319,7 @@ public sealed class RvcService
         RvcVitsBridgeSpec spec = BridgeSpec();
         if (cfg.VcBridge && spec.Model.Length == 0)
         {
-            return (false, "桥接 VITS-VC 已打开，但 VITS 页签还没选模型——先去「本地生成 → VITS」选一个再开流");
+            return (false, "桥接 VITS-VC 已打开，但还没选 VITS 模型——在「桥接 VITS 语音转换」块里选一个模型再开流");
         }
 
         _rtEngine.BridgeSpec = spec;
@@ -1413,12 +1430,207 @@ public sealed class RvcService
         RvcVitsBridgeSpec bridgeNow = _rtEngine.BridgeSpec;
         if (saved.VcBridge && bridgeNow != null && bridgeNow.Model.Length == 0)
         {
-            return (false, "桥接 VITS-VC 已保存，但 VITS 页签还没选模型——先去「本地生成 → VITS」选一个", none, false);
+            return (false, "桥接 VITS-VC 已保存，但还没选 VITS 模型——在「桥接 VITS 语音转换」块里选一个模型", none, false);
         }
 
         (bool ok, string message, List<string> applied) = await _rtEngine
             .UpdateAsync(saved, ct).ConfigureAwait(false);
         return (ok, message, applied, false);
+    }
+
+    /// <summary>桥接下拉的数据面——VITS 模型清单 + 指定模型的说话人（含自然 F0）。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>快照对象。</returns>
+    public Task<object> BridgeOptionsAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        RvcRealtimeConfig cfg = RealtimeConfig();
+        Func<RvcVitsRuntime?>? source = _vitsRuntimeSource;
+        RvcVitsRuntime? rt = source?.Invoke();
+
+        var models = new List<RvcVitsModelItem>();
+        var speakers = new List<RvcVitsSpeakerItem>();
+        bool runtimeOk = rt != null
+            && rt.ModelsRoot.Length > 0
+            && Directory.Exists(rt.ModelsRoot);
+
+        if (runtimeOk && rt != null)
+        {
+            string root = rt.ModelsRoot;
+            try
+            {
+                foreach (string groupDir in Directory.GetDirectories(root))
+                {
+                    string group = Path.GetFileName(groupDir);
+                    foreach (string pth in Directory.GetFiles(groupDir, "*.pth"))
+                    {
+                        string name = Path.GetFileNameWithoutExtension(pth);
+                        string cfgPath = Path.Combine(groupDir, name + ".json");
+                        models.Add(new RvcVitsModelItem
+                        {
+                            Name = name,
+                            Group = group,
+                            Ok = File.Exists(cfgPath),
+                        });
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                runtimeOk = false;
+            }
+        }
+
+        if (runtimeOk)
+        {
+            foreach (RvcVitsModelItem m in models)
+            {
+                string cfgPath = Path.Combine(rt!.ModelsRoot, m.Group, m.Name + ".json");
+                (int speakers2, int rate, bool ok) = ReadVitsModelMeta(cfgPath);
+                m.Speakers = speakers2;
+                m.SamplingRate = rate;
+                m.Ok = m.Ok && ok;
+            }
+
+            models.Sort((x, y) => string.CompareOrdinal(x.Name, y.Name));
+        }
+
+        if (rt != null && cfg.VcBridgeModel.Length > 0)
+        {
+            RvcVitsModelItem? hit = models.FirstOrDefault(m => m.Name == cfg.VcBridgeModel);
+            if (hit != null && hit.Ok && hit.Speakers > 0)
+            {
+                for (int i = 0; i < hit.Speakers; i++)
+                {
+                    speakers.Add(new RvcVitsSpeakerItem
+                    {
+                        Index = i,
+                        Name = "spk" + i,
+                        F0 = rt.F0Of?.Invoke(hit.Name, i) ?? 0,
+                    });
+                }
+
+                // 名册里的名字比 n_speakers 少是常态——有名字的覆盖上去
+                foreach (string[] pair in VitsSpeakerNames(rt.ModelsRoot, cfg.VcBridgeModel))
+                {
+                    if (int.TryParse(pair[0], out int sid) && sid >= 0 && sid < speakers.Count)
+                    {
+                        speakers[sid].Name = pair[1];
+                    }
+                }
+            }
+        }
+
+        object snapshot = new
+        {
+            ok = true,
+            runtimeOk,
+            modelsRoot = rt?.ModelsRoot ?? "",
+            f0Profile = rt?.F0Profile ?? "",
+            f0 = new
+            {
+                ready = speakers.Count(s => s.F0 > 0),
+                total = speakers.Count,
+            },
+            models,
+            speakers,
+            selected = new
+            {
+                model = cfg.VcBridgeModel,
+                dst = cfg.VcBridgeDst,
+                autoSrc = cfg.VcBridgeAutoSrc,
+                autoF0 = cfg.VcBridgeAutoF0,
+                blocks = cfg.VcBridgeBlocks,
+                enabled = cfg.VcBridge,
+            },
+        };
+
+        return Task.FromResult(snapshot);
+    }
+
+    /// <summary>读 VITS 模型 config 的说话人数与采样率（读不出给 0 / false）。</summary>
+    /// <param name="configPath">config 路径。</param>
+    /// <returns>(说话人数, 采样率, 是否解析成功)。</returns>
+    private static (int Speakers, int Rate, bool Ok) ReadVitsModelMeta(string configPath)
+    {
+        if (!File.Exists(configPath))
+        {
+            return (0, 0, false);
+        }
+
+        try
+        {
+            string text = File.ReadAllText(configPath);
+            using var doc = JsonDocument.Parse(text);
+            JsonElement root = doc.RootElement;
+            int speakers = 0;
+            int rate = 0;
+            if (root.TryGetProperty("data", out JsonElement data))
+            {
+                if (data.TryGetProperty("n_speakers", out JsonElement ns) && ns.ValueKind == JsonValueKind.Number)
+                {
+                    speakers = ns.GetInt32();
+                }
+
+                if (data.TryGetProperty("sampling_rate", out JsonElement sr) && sr.ValueKind == JsonValueKind.Number)
+                {
+                    rate = sr.GetInt32();
+                }
+            }
+
+            return (speakers, rate, speakers > 0);
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            return (0, 0, false);
+        }
+    }
+
+    /// <summary>读模型名册里「有名字」的那些说话人（索引 → 名字）。</summary>
+    /// <param name="modelsRoot">模型根。</param>
+    /// <param name="model">模型名。</param>
+    /// <returns>索引与名字的字符串对（解析失败给空表）。</returns>
+    private static List<string[]> VitsSpeakerNames(string modelsRoot, string model)
+    {
+        var list = new List<string[]>();
+        try
+        {
+            foreach (string groupDir in Directory.GetDirectories(modelsRoot))
+            {
+                string cfgPath = Path.Combine(groupDir, model + ".json");
+                if (!File.Exists(cfgPath))
+                {
+                    continue;
+                }
+
+                using var doc = JsonDocument.Parse(File.ReadAllText(cfgPath));
+                if (!doc.RootElement.TryGetProperty("speakers", out JsonElement arr)
+                    || arr.ValueKind != JsonValueKind.Array)
+                {
+                    return list;
+                }
+
+                int i = 0;
+                foreach (JsonElement item in arr.EnumerateArray())
+                {
+                    string name = item.ValueKind == JsonValueKind.String ? item.GetString() ?? "" : "";
+                    if (name.Length > 0)
+                    {
+                        list.Add(new[] { i.ToString(), name });
+                    }
+
+                    i++;
+                }
+
+                return list;
+            }
+        }
+        catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+        {
+            return list;
+        }
+
+        return list;
     }
 
     /// <summary>枚举音频设备（设备类型 / 输入 / 输出下拉用；不加载模型、不开流）。</summary>
@@ -1659,6 +1871,14 @@ public sealed class RvcService
             _rtConfig.Bypass = next.Bypass;
             _rtConfig.VcBridge = next.VcBridge;
             _rtConfig.VcBridgeBlocks = Clamp(next.VcBridgeBlocks <= 0 ? 1 : next.VcBridgeBlocks, 1, 16);
+            if (next.VcBridgeModel != null)
+            {
+                _rtConfig.VcBridgeModel = next.VcBridgeModel.Trim();
+            }
+
+            _rtConfig.VcBridgeDst = Clamp(next.VcBridgeDst, 0, 4096);
+            _rtConfig.VcBridgeAutoSrc = next.VcBridgeAutoSrc;
+            _rtConfig.VcBridgeAutoF0 = next.VcBridgeAutoF0;
 
             if (next.Device != null && next.Device.Length > 0)
             {
@@ -1841,6 +2061,10 @@ public sealed class RvcService
             Bypass = src.Bypass,
             VcBridge = src.VcBridge,
             VcBridgeBlocks = src.VcBridgeBlocks,
+            VcBridgeModel = src.VcBridgeModel,
+            VcBridgeDst = src.VcBridgeDst,
+            VcBridgeAutoSrc = src.VcBridgeAutoSrc,
+            VcBridgeAutoF0 = src.VcBridgeAutoF0,
             Device = src.Device,
             Half = src.Half,
             PythonPath = src.PythonPath,

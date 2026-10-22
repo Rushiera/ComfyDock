@@ -59,12 +59,6 @@ public sealed class VitsConfig
 
     /// <summary>语音转换的目标说话人索引。</summary>
     public int VcDst { get; set; } = 1;
-
-    /// <summary>桥接时自动挑原说话人（按 F0 名册挑与输入最接近的；手动 VcSrc 仍在、作为兜底）。</summary>
-    public bool VcAutoSrc { get; set; } = true;
-
-    /// <summary>桥接时自动调 RVC 变调（让 RVC 输出基频落到目标说话人的自然音域）。</summary>
-    public bool VcAutoF0 { get; set; } = true;
 }
 
 /// <summary>
@@ -321,9 +315,24 @@ public sealed class VitsService
             };
         }
     }
-    /// <summary>桥接用的 VITS 设置快照——模型 / 说话人 / F0 名册取自本页签当前配置（唯一真相源）。</summary>
-    /// <returns>设置快照（模型没选时 Model 为空，桥接侧不下发）。</returns>
-    public RvcVitsBridgeSpec BridgeSpec()
+    /// <summary>F0 名册缓存文件路径（桥接侧按它读名册）。</summary>
+    public string F0ProfilePath => _f0ProfilePath;
+
+    /// <summary>查某个说话人的自然 F0（名册里没有给 0）。</summary>
+    /// <param name="model">模型名。</param>
+    /// <param name="sid">说话人索引。</param>
+    /// <returns>中位 F0（Hz）；缺失 0。</returns>
+    public double F0Of(string model, int sid)
+    {
+        lock (_gate)
+        {
+            return F0ProfileOfLocked(model)?.F0Of(sid) ?? 0;
+        }
+    }
+
+    /// <summary>桥接要用的 VITS 运行面——路径 / 设备 / 名册 + F0 查询（RVC 页签的桥接按它组装 spec）。</summary>
+    /// <returns>运行面快照。</returns>
+    public RvcVitsRuntime BridgeRuntime()
     {
         lock (_gate)
         {
@@ -334,26 +343,61 @@ public sealed class VitsService
                 repo = Path.Combine(AppContext.BaseDirectory, "runtime", "vits");
             }
 
-            VitsF0Profile? prof = F0ProfileOfLocked(_config.Model);
-
-            return new RvcVitsBridgeSpec
+            return new RvcVitsRuntime
             {
-                Model = _config.Model,
-                Src = _config.VcSrc,
-                Dst = _config.VcDst,
-                SrcAuto = _config.VcAutoSrc,
-                F0Auto = _config.VcAutoF0,
-                DstF0 = prof is null ? 0 : prof.F0Of(_config.VcDst),
-                F0Profile = prof is null ? "" : _f0ProfilePath,
                 ModelsRoot = _config.ModelsRoot,
                 Repo = repo,
                 Device = _config.Device.Length == 0 ? "cuda" : _config.Device,
+                F0Profile = _f0ProfilePath,
+                F0Of = F0Of,
             };
         }
     }
 
-    /// <summary>F0 名册缓存文件路径（桥接侧按它读名册）。</summary>
-    public string F0ProfilePath => _f0ProfilePath;
+    /// <summary>桥接下拉用的模型清单（只回可用项，带说话人数与采样率）。</summary>
+    /// <returns>模型条目。</returns>
+    public List<RvcVitsModelItem> BridgeModels()
+    {
+        var list = new List<RvcVitsModelItem>();
+        foreach (VitsModelItem m in ListModels())
+        {
+            list.Add(new RvcVitsModelItem
+            {
+                Name = m.Name,
+                Group = m.Group,
+                Speakers = m.Speakers,
+                SamplingRate = m.SamplingRate,
+                Ok = m.Ok,
+            });
+        }
+
+        return list;
+    }
+
+    /// <summary>桥接下拉用的说话人清单（索引 / 名字 / 自然 F0）。</summary>
+    /// <param name="model">模型名。</param>
+    /// <returns>说话人条目。</returns>
+    public List<RvcVitsSpeakerItem> BridgeSpeakers(string model)
+    {
+        var list = new List<RvcVitsSpeakerItem>();
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            return list;
+        }
+
+        VitsF0Profile? prof = F0ProfileOf(model);
+        foreach (VitsSpeakerItem s in SpeakersOf(model))
+        {
+            list.Add(new RvcVitsSpeakerItem
+            {
+                Index = s.Index,
+                Name = s.Name,
+                F0 = prof?.F0Of(s.Index) ?? 0,
+            });
+        }
+
+        return list;
+    }
 
     /// <summary>读一份名册（模型名 → 名册；没有或权重已换则 null）。</summary>
     /// <param name="model">模型名。</param>
@@ -640,8 +684,6 @@ public sealed class VitsService
             _config.Sid = Math.Max(0, next.Sid);
             _config.VcSrc = Math.Max(0, next.VcSrc);
             _config.VcDst = Math.Max(0, next.VcDst);
-            _config.VcAutoSrc = next.VcAutoSrc;
-            _config.VcAutoF0 = next.VcAutoF0;
             _config.LengthScale = Clamp(next.LengthScale <= 0 ? 1.0 : next.LengthScale, 0.2, 3.0);
             _config.NoiseScale = Clamp(next.NoiseScale <= 0 ? 0.667 : next.NoiseScale, 0, 2.0);
             _config.NoiseScaleW = Clamp(next.NoiseScaleW <= 0 ? 0.8 : next.NoiseScaleW, 0, 2.0);

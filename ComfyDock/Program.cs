@@ -258,8 +258,8 @@ public static class Program
             options.DataDir,
             options.VitsOutDir);
 
-        // 桥接 VITS-VC：RVC 实时链的模型 / 说话人取自 VITS 页签（单一真相源——不另存一份）
-        rvc.SetVitsBridgeSource(() => vits.BridgeSpec());
+        // 桥接 VITS-VC：模型与目标说话人归 RVC 页签配置；VITS 只提供运行面（路径 / 名册 / F0 查询）
+        rvc.SetVitsRuntimeSource(() => vits.BridgeRuntime());
 
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -1228,21 +1228,6 @@ public static class Program
             {
                 (bool _, string note) = await rvc.RealtimeRefreshBridgeAsync(ct).ConfigureAwait(false);
                 bridgeMessage = note;
-                // 名册缺失就在后台补量一份（已新鲜时立刻返回）——桥接的自动挑源 / 自动变调靠它
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await vits.EnsureF0ProfileAsync(model ?? "", false, CancellationToken.None)
-                            .ConfigureAwait(false);
-                        await rvc.RealtimeRefreshBridgeAsync(CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is IOException || ex is InvalidOperationException)
-                    {
-                        // 后台补量失败不抛到请求上——状态在 /api/vits/f0 里看得见
-                        Console.Error.WriteLine("F0 名册后台补量失败：" + ex.Message);
-                    }
-                });
             }
 
             return Results.Json(new { ok, message, bridgeMessage, engine = vits.Engine }, JsonOptions);
@@ -1609,6 +1594,32 @@ public static class Program
                 applied,
                 needRestart,
                 state = rvc.Realtime,
+            }, JsonOptions);
+        });
+
+        app.MapGet("/api/rvc/realtime/bridge", async (CancellationToken ct) =>
+        {
+            return Results.Json(await rvc.BridgeOptionsAsync(ct).ConfigureAwait(false), JsonOptions);
+        });
+
+        app.MapPost("/api/rvc/realtime/bridge/profile", async (string? model, bool? force, CancellationToken ct) =>
+        {
+            // RVC 页签里选了模型就地补量 F0 名册——桥接的自动挑源 / 自动变调靠它
+            (bool ok, string message) = await vits
+                .EnsureF0ProfileAsync(model ?? "", force ?? false, ct).ConfigureAwait(false);
+            string bridgeMessage = "";
+            if (ok)
+            {
+                (bool _, string note) = await rvc.RealtimeRefreshBridgeAsync(ct).ConfigureAwait(false);
+                bridgeMessage = note;
+            }
+
+            return Results.Json(new
+            {
+                ok,
+                message,
+                bridgeMessage,
+                options = await rvc.BridgeOptionsAsync(ct).ConfigureAwait(false),
             }, JsonOptions);
         });
 
