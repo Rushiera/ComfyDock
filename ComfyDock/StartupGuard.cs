@@ -138,6 +138,15 @@ public static class StartupGuard
                 continue;
             }
 
+            // 🔴 只认 LISTENING——旧实例退出后它的监听套接字会在 netstat 里留一段 FIN_WAIT_2 / TIME_WAIT，
+            // 那不是「有人占着端口」，随即就会消失。把这类行当占用会让新实例等满窗口后自我拒绝启动，
+            // 而旧实例已按排程停机 → 换版 / 重启后两个进程全消失（2026-10-25 实测：新实例 51712
+            // 起来 40 秒内退出、旧实例 52548 同时消失、8971 只剩 FIN_WAIT_2、事件日志无崩溃记录）。
+            if (!string.Equals(parts[3], "LISTENING", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (!int.TryParse(parts[4], out int pid) || pid <= 0)
             {
                 continue;

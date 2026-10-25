@@ -457,7 +457,7 @@ public sealed class IrodoriTtsEngine : IDisposable
             return (false, "", 0, 0, "写不进引擎：" + ex.Message);
         }
 
-        // 一句最长等 10 分钟（长文本 + 慢卡留足余量）
+        // 每读一行最长等 10 分钟——分段合成时每段结束都有一行回执，超长文本不会撞这个闸
         while (true)
         {
             string? line = await ReadLineWithTimeoutAsync(proc, 600000, ct).ConfigureAwait(false);
@@ -472,6 +472,21 @@ public sealed class IrodoriTtsEngine : IDisposable
             string ev = StringOf(node, "ev");
             if (ev == "pong" || ev == "start")
             {
+                continue;
+            }
+
+            if (ev == "plan")
+            {
+                int total = (int)DoubleOf(node, "chunks");
+                SetState("busy", "按句切段合成中（共 " + total + " 段）…");
+                continue;
+            }
+
+            if (ev == "chunk")
+            {
+                int index = (int)DoubleOf(node, "index");
+                int total = (int)DoubleOf(node, "total");
+                SetState("busy", "按句切段合成中 " + index + "/" + total + "…");
                 continue;
             }
 
@@ -494,14 +509,18 @@ public sealed class IrodoriTtsEngine : IDisposable
             double audioSeconds = DoubleOf(node, "audioSeconds");
             double elapsed = DoubleOf(node, "seconds");
             long usedSeed = (long)DoubleOf(node, "seed");
+            int chunks = (int)DoubleOf(node, "chunks");
+            string warnings = JoinWarnings(node);
             SetState("ready", "引擎空闲（上一句 " + elapsed.ToString("F1") + " 秒）");
             if (file.Length == 0)
             {
                 return (false, "", 0, 0, "引擎跑完了，但没拿到音频文件");
             }
 
-            return (true, file, audioSeconds, usedSeed, "出声 " + audioSeconds.ToString("F1") + " 秒（耗时 "
-                + elapsed.ToString("F1") + " 秒）");
+            string note = "出声 " + audioSeconds.ToString("F1") + " 秒（耗时 " + elapsed.ToString("F1") + " 秒"
+                + (chunks > 1 ? "，按句切 " + chunks + " 段" : "") + "）"
+                + (warnings.Length > 0 ? "；" + warnings : "");
+            return (true, file, audioSeconds, usedSeed, note);
         }
     }
 
@@ -721,6 +740,28 @@ public sealed class IrodoriTtsEngine : IDisposable
         {
             return false;
         }
+    }
+    /// <summary>把 done 回执里的 warnings 数组拼成给人看的一行（每行一条）。</summary>
+    /// <param name="node">done 回执节点。</param>
+    /// <returns>换行分隔的告警；没有则空串。</returns>
+    private static string JoinWarnings(JsonNode? node)
+    {
+        if (node is null || node["warnings"] is not JsonArray array || array.Count == 0)
+        {
+            return "";
+        }
+
+        var lines = new List<string>();
+        foreach (JsonNode? item in array)
+        {
+            string text = (item?.GetValue<string>() ?? "").Trim();
+            if (text.Length > 0)
+            {
+                lines.Add(text);
+            }
+        }
+
+        return string.Join("；", lines);
     }
 
     /// <summary>取数值字段。</summary>

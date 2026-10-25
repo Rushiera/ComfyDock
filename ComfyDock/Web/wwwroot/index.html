@@ -590,7 +590,7 @@
                   <label title="留空或 -1 = 每次随机；填数字 = 固定种子">种子</label><input type="number" id="ttsSeed" step="1" placeholder="随机">
                   <button class="btn-mini" id="ttsSeedRandom" title="把种子设回随机（每次都不一样）">随机</button>
                   <label title="时长倍率：>1 更长，<1 更短（由模型预测时长后乘这个数）">时长倍率</label><input type="number" id="ttsDurationScale" step="0.05" min="0.2" max="4">
-                  <label title="强制输出秒数（留空 = 自动预测；填了会盖掉时长预测）">强制秒数</label><input type="number" id="ttsSeconds" step="0.5" min="0" placeholder="自动">
+                  <label title="强制输出秒数（留空 = 自动：长文本按句切段逐段合成再拼回，总时长没有上限，语速由模型自己定；填了会盖掉切段与时长预测）">强制秒数</label><input type="number" id="ttsSeconds" step="0.5" min="0" placeholder="自动">
                 </div>
                 <div class="moss-line">
                   <label title="bf16 更快（8 G 卡推荐）；fp32 最稳但更慢更吃显存">精度</label>
@@ -623,7 +623,7 @@
                     <div class="moss-help-item"><b>步数</b>（默认 40）——采样步数，官方口径 40。<br>降到 6~10 用 Sway 采样能快，但质量明显下降（这条链路没开 Sway，降步数就是纯掉质量）。超过 40 收益极小，只烧时间。</div>
                     <div class="moss-help-item"><b>种子</b>（默认 -1 = 随机）——固定数字 + 同样参数 = 同样的音频（实测 int8 档复跑 SHA-256 完全一致）。挑到喜欢的一条，记下种子就能复现；只改一个参数对比效果时尤其有用。</div>
                     <div class="moss-help-item"><b>时长倍率</b>（默认 1.0）——v4 系列会自己预测输出长度，这个数是在预测结果上再乘一遍：1.1 = 慢 10%（更从容），0.9 = 紧 10%。整体语速偏快偏慢时微调它，别当成「精确时长」用。</div>
-                    <div class="moss-help-item"><b>强制秒数</b>（默认空 = 自动）——填了就直接盖掉时长预测，按这个秒数生成。只在「必须卡进某个时长」时用：填得比文本需要的短会把话压扁甚至吞字，填长了尾巴拖静音。</div>
+                    <div class="moss-help-item"><b>强制秒数</b>（默认空 = 自动）——<b>留空才是正常用法</b>：长文本会按句读自动切成若干段，每段按模型自己预测的时长出声，再拼回一条 wav——总时长没有上限，语速也不会被压急（旧版整段被夹在 30 秒，长句就会说得飞快）。<br>填了数字 = 整段一次合成、按这个秒数出声，只有「必须卡进某个时长」时才用：填得比文本需要的短会把话压扁甚至吞字，填长了尾巴拖静音。</div>
                     <div class="moss-help-item"><b>精度</b>（默认 bf16）——bf16 更快更省显存，8 G 卡必选；fp32 数值最稳但显存翻倍，一般只在排查数值异常时试。<b>int8 跑法下这一项被忽略</b>（权重已经是 int8，精度固定 bf16）。</div>
                     <div class="moss-help-item"><b>挂 LoRA</b>（默认开）——走当前跑法对应的角色 LoRA（small 线 = rank16 500 步，large 线 = rank32 400 步）。关掉 = 只用基座的通用音色，用来对比「LoRA 到底改了多少」。<b>跑法与 LoRA 必须配对</b>（small↔small、large↔large），错配会加载失败。</div>
                     <div class="moss-help-item"><b>参考音频</b>（默认全选）——零样本音色克隆的输入：参考音频是「谁」，文本是「说什么」。<br>· 多选按勾选顺序拼接，30 秒左右收益最大（训练时就是这么拼的）；只给一段也能用，但相似度略低。<br>· 一段都不勾 = 用目录里全部。<br>· 质量要点：干净、单一说话人、无音乐无噪声；参考里的语气会顺带被学走（想换语气用风格描述压）。<br>· 不要用「不用参考音频」除非就是要听基座通用音色——那时音色会漂，风格描述也能单独生效。</div>
