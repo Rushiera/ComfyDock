@@ -58,6 +58,9 @@ public sealed class TtsConfig
     /// <summary>推理设备（cuda / cpu）。</summary>
     public string Device { get; set; } = "cuda";
 
+    /// <summary>显存上限（MB，0 = 不限）——设了就让 worker 把 CUDA 分配池钳到这个值，超出即 OOM。</summary>
+    public int VramLimitMb { get; set; }
+
     /// <summary>是否挂 LoRA（关掉 = 只用基座，用于对比）。</summary>
     public bool UseLora { get; set; } = true;
 
@@ -101,6 +104,9 @@ public sealed class TtsPlan
     /// <summary>生效的声码器设备。</summary>
     public string CodecDevice { get; set; } = "cuda";
 
+    /// <summary>生效的显存上限（MB，0 = 不限）。</summary>
+    public int VramLimitMb { get; set; }
+
     /// <summary>跑法人话名（面板显示）。</summary>
     public string Label { get; set; } = "";
 
@@ -134,6 +140,7 @@ public sealed class TtsPlan
                 Precision = "bf16",
                 Device = device,
                 CodecDevice = device,
+                VramLimitMb = cfg.VramLimitMb,
                 Label = "依田芳乃 · v4-Large int8 · 全 GPU（8 G 卡推荐）",
             };
         }
@@ -148,6 +155,7 @@ public sealed class TtsPlan
                 Precision = "bf16",
                 Device = device,
                 CodecDevice = mode == "large" ? "cpu" : device,
+                VramLimitMb = cfg.VramLimitMb,
                 Label = mode == "large" ? "依田芳乃 · v4-Large bf16 · 声码器在 CPU" : "依田芳乃 · v4-Large bf16 · 全 GPU",
             };
         }
@@ -162,6 +170,7 @@ public sealed class TtsPlan
                 Precision = precision,
                 Device = device,
                 CodecDevice = codecDevice.Length == 0 ? device : codecDevice,
+                VramLimitMb = cfg.VramLimitMb,
                 Label = "自定义（按下面填的路径与设备）",
             };
         }
@@ -173,6 +182,7 @@ public sealed class TtsPlan
             Precision = precision,
             Device = device,
             CodecDevice = device,
+            VramLimitMb = cfg.VramLimitMb,
             Label = "依田芳乃 · v4.1-Small · 全 GPU",
         };
     }
@@ -436,6 +446,7 @@ public sealed class TtsService
                 ? mode
                 : "small";
             _config.CodecDevice = next.CodecDevice == "cpu" ? "cpu" : "cuda";
+            _config.VramLimitMb = Clamp(next.VramLimitMb, 0, 262144);
 
             if (next.LargeBaseModel.Length > 0)
             {
@@ -526,6 +537,7 @@ public sealed class TtsService
                 UseLora = _config.UseLora,
                 RunMode = _config.RunMode,
                 CodecDevice = _config.CodecDevice,
+                VramLimitMb = _config.VramLimitMb,
                 LargeBaseModel = _config.LargeBaseModel,
                 LargeLoraDir = _config.LargeLoraDir,
                 PythonPath = _config.PythonPath,
@@ -764,7 +776,8 @@ public sealed class TtsService
             plan.LoraDir,
             plan.Device,
             plan.Precision,
-            plan.CodecDevice);
+            plan.CodecDevice,
+            plan.VramLimitMb);
     }
 
     /// <summary>后台跑一次合成，结束后更新任务状态。</summary>

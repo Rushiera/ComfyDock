@@ -81,10 +81,11 @@ LORA = arg("--lora")
 DEVICE = arg("--device", "cuda")
 CODEC_DEVICE = arg("--codec-device", DEVICE)
 PRECISION = arg("--precision", "bf16")
+VRAM_LIMIT_MB = arg("--vram-limit-mb", "0")
 
 if REPO == "" or BASE_MODEL == "" or CODEC == "":
     emit({"ev": "error", "stage": "args",
-          "message": "用法: tts_worker.py --repo <irodori-tts 目录> --base-model <safetensors> --codec <weights.pth> [--lora <适配器目录>] [--device cuda] [--precision bf16]"})
+          "message": "用法: tts_worker.py --repo <irodori-tts 目录> --base-model <safetensors> --codec <weights.pth> [--lora <适配器目录>] [--device cuda] [--precision bf16] [--vram-limit-mb 6144]"})
     sys.exit(2)
 
 # 水印权重（sony/silentcipher）走镜像；huggingface.co 直连在部分网络下不通
@@ -103,6 +104,30 @@ try:
     )
 except Exception:
     fail("import", "导入 irodori_tts 失败（检查 --repo 是否指向 Irodori-TTS 仓库根）")
+
+# [段2b] 显存上限（可选）——把 PyTorch 分配池钳到指定值，让本进程「以为」只有这么多显存。
+# 只约束本进程的分配结果；驱动层总量不变（OOM 文本里的 total capacity 仍是物理值）。
+# 必须在加载基座之前设：分配器一旦工作过，池上限就按当时算，晚设不准。
+VRAM = {"limitMb": 0, "totalMb": 0, "applied": False}
+try:
+    _vram_want = int(VRAM_LIMIT_MB or "0")
+except ValueError:
+    fail("vram", "--vram-limit-mb 必须是整数（单位 MB；0 = 不限）")
+
+if _vram_want > 0:
+    if DEVICE.startswith("cuda") and torch.cuda.is_available():
+        _vram_total = int(torch.cuda.get_device_properties(0).total_memory)
+        _vram_total_mb = _vram_total // (1024 * 1024)
+        if _vram_want >= _vram_total_mb:
+            # 上限不低于物理显存 = 等于不限；明说一句，别让人以为设了就生效
+            VRAM = {"limitMb": 0, "totalMb": _vram_total_mb, "applied": False,
+                    "note": "上限 " + str(_vram_want) + " MB 不低于物理显存 " + str(_vram_total_mb) + " MB，未生效"}
+        else:
+            torch.cuda.set_per_process_memory_fraction(_vram_want * 1024 * 1024 / float(_vram_total), 0)
+            VRAM = {"limitMb": _vram_want, "totalMb": _vram_total_mb, "applied": True}
+    else:
+        VRAM = {"limitMb": _vram_want, "totalMb": 0, "applied": False,
+                "note": "推理设备不是 CUDA，显存上限不适用"}
 
 # [段3] 加载基座 + 声码器（只做一次）
 _t0 = time.time()
@@ -135,6 +160,7 @@ emit({
     "base": os.path.basename(BASE_MODEL),
     "precision": PRECISION,
     "codecDevice": CODEC_DEVICE,
+    "vram": VRAM,
     "seconds": round(time.time() - _t0, 1),
 })
 

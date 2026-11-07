@@ -601,6 +601,11 @@
                   <label class="moss-chk" title="挂上当前跑法对应的角色 LoRA；关掉 = 只用基座（用于对比音色）"><input type="checkbox" id="ttsUseLora"> 挂 LoRA</label>
                   <label class="moss-chk" title="不用参考音频（音色会漂到基座的通用音色，一般关着）"><input type="checkbox" id="ttsNoRef"> 不用参考音频</label>
                 </div>
+                <div class="moss-line">
+                  <label title="显存上限（MB）：把这一路 worker 的 CUDA 分配池钳到该值——模型会以为本机只有这么多显存，超出即 OOM。只约束本进程；留空 / 0 = 不限。改完点保存，引擎按新值重启">显存上限</label>
+                  <input type="number" id="ttsVramLimit" min="0" max="65536" step="256" style="width:110px" placeholder="不限（MB）">
+                  <span class="path" id="ttsVramLine">—</span>
+                </div>
                 <div class="moss-line rh-dim" style="font-size:11px">
                   参考音频：多选按顺序拼接（训练时就是这么拼的，30 秒左右收益最大）；一段都不勾 = 用目录里全部
                 </div>
@@ -625,6 +630,7 @@
                     <div class="moss-help-item"><b>时长倍率</b>（默认 1.0）——v4 系列会自己预测输出长度，这个数是在预测结果上再乘一遍：1.1 = 慢 10%（更从容），0.9 = 紧 10%。整体语速偏快偏慢时微调它，别当成「精确时长」用。</div>
                     <div class="moss-help-item"><b>强制秒数</b>（默认空 = 自动）——<b>留空才是正常用法</b>：长文本会按句读自动切成若干段，每段按模型自己预测的时长出声，再拼回一条 wav——总时长没有上限，语速也不会被压急（旧版整段被夹在 30 秒，长句就会说得飞快）。<br>填了数字 = 整段一次合成、按这个秒数出声，只有「必须卡进某个时长」时才用：填得比文本需要的短会把话压扁甚至吞字，填长了尾巴拖静音。</div>
                     <div class="moss-help-item"><b>精度</b>（默认 bf16）——bf16 更快更省显存，8 G 卡必选；fp32 数值最稳但显存翻倍，一般只在排查数值异常时试。<b>int8 跑法下这一项被忽略</b>（权重已经是 int8，精度固定 bf16）。</div>
+                    <div class="moss-help-item"><b>显存上限</b>（默认空 = 不限）——把这一路 worker 的 CUDA 分配池钳到指定 MB，<b>模型会以为本机只有这么多显存</b>：超出就当场 OOM 报错，不会偷偷往系统内存溢出。<br>· 用途：跟别的吃显存的东西（ComfyUI 出图 / 游戏）错开不打架；或者先按小卡的上限试跑，看换卡到底够不够。<br>· 只约束这一个进程——<code>nvidia-smi</code> 看到的物理总量不变，OOM 文本里的 total capacity 也仍是物理值（那是驱动报的，只有 <code>6.00 GiB allowed</code> 才是这个上限）。<br>· 真 6 G 卡留给分配器的其实约 5.8 G（CUDA context 另占 300 MB 上下），要按真卡模拟就设 5800。<br>· 改完点保存，引擎按新值重启；下面那行会显示「生效 / 未生效 + 原因」（设备不是 CUDA、或上限不低于物理显存，都算未生效）。<br>· 仿真答的是「装不装得下」，答不了「跑多快」——带宽与频率测不出来；反过来「仿真没 OOM」也不等于真卡不卡（真卡超显存可能表现为卡死而非 OOM）。</div>
                     <div class="moss-help-item"><b>挂 LoRA</b>（默认开）——走当前跑法对应的角色 LoRA（small 线 = rank16 500 步，large 线 = rank32 400 步）。关掉 = 只用基座的通用音色，用来对比「LoRA 到底改了多少」。<b>跑法与 LoRA 必须配对</b>（small↔small、large↔large），错配会加载失败。</div>
                     <div class="moss-help-item"><b>参考音频</b>（默认全选）——零样本音色克隆的输入：参考音频是「谁」，文本是「说什么」。<br>· 多选按勾选顺序拼接，30 秒左右收益最大（训练时就是这么拼的）；只给一段也能用，但相似度略低。<br>· 一段都不勾 = 用目录里全部。<br>· 质量要点：干净、单一说话人、无音乐无噪声；参考里的语气会顺带被学走（想换语气用风格描述压）。<br>· 不要用「不用参考音频」除非就是要听基座通用音色——那时音色会漂，风格描述也能单独生效。</div>
                     <div class="moss-help-item"><b>停止引擎</b>——常驻引擎会一直占着显存（small 约 4~5 G，int8 大模型约 7.7 G）。要跑 ComfyUI 出图、或者今天不打算再合成，点它把显存还回去；下次「生成」会自动重新加载（small 约 20 秒、int8 约 50 秒）。</div>
@@ -3146,6 +3152,7 @@
       set("ttsDurationScale", cfg.durationScale === undefined ? 1 : cfg.durationScale);
       set("ttsSeconds", cfg.seconds ? cfg.seconds : "");
       set("ttsPrecision", cfg.precision || "bf16");
+      set("ttsVramLimit", cfg.vramLimitMb ? cfg.vramLimitMb : "");
       set("ttsRunMode", cfg.runMode || "small");
       set("ttsLargeBaseModel", cfg.largeBaseModel || "");
       set("ttsLargeInt8BaseModel", cfg.largeInt8BaseModel || "");
@@ -3191,7 +3198,22 @@
 
       document.getElementById("ttsPlanLine").textContent = plan.label
         ? plan.label + " · 精度 " + plan.precision + " · 声码器 " + plan.codecDevice
+          + (plan.vramLimitMb ? " · 显存上限 " + plan.vramLimitMb + " MB" : "")
         : "—";
+
+      const vramLine = document.getElementById("ttsVramLine");
+      if (vramLine) {
+        // 生效与否看引擎回执——worker 自己判：设备非 CUDA / 上限不低于物理显存都不算生效
+        if (engine.vramApplied) {
+          vramLine.textContent = "生效：" + engine.vramLimitMb + " MB（物理 " + engine.vramTotalMb + " MB）";
+        } else if (engine.vramNote) {
+          vramLine.textContent = "未生效：" + engine.vramNote;
+        } else if (cfg.vramLimitMb) {
+          vramLine.textContent = "已设 " + cfg.vramLimitMb + " MB —— 起引擎后按新值生效";
+        } else {
+          vramLine.textContent = "不限";
+        }
+      }
 
       document.getElementById("ttsEnvLine").textContent = (env.canGenerate ? "可生成" : "前置条件不足")
         + " · " + (plan.label || "跑法未定")
@@ -3270,6 +3292,7 @@
         durationScale: mossNum("ttsDurationScale", 1),
         seconds: mossNum("ttsSeconds", 0),
         precision: document.getElementById("ttsPrecision").value,
+        vramLimitMb: Math.round(mossNum("ttsVramLimit", 0)),
         runMode: document.getElementById("ttsRunMode").value,
         codecDevice: document.getElementById("ttsCodecDevice").value,
         largeBaseModel: document.getElementById("ttsLargeBaseModel").value || cfg.largeBaseModel || "",

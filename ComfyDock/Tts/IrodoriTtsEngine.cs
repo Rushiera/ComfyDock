@@ -39,6 +39,18 @@ public sealed class TtsEngineState
     /// <summary>这一代 worker 的声码器设备（就绪后才有）。</summary>
     public string CodecDevice { get; set; } = "";
 
+    /// <summary>生效的显存上限（MB，0 = 不限；就绪后才有）。</summary>
+    public int VramLimitMb { get; set; }
+
+    /// <summary>物理显存总量（MB，就绪后才有）。</summary>
+    public int VramTotalMb { get; set; }
+
+    /// <summary>显存上限是否真的生效（worker 判定：设备非 CUDA / 上限不低于物理显存都算未生效）。</summary>
+    public bool VramApplied { get; set; }
+
+    /// <summary>显存上限没生效时的原因（生效时为空）。</summary>
+    public string VramNote { get; set; } = "";
+
     /// <summary>worker 初始化耗时（秒，含基座与声码器加载）。</summary>
     public double StartupSeconds { get; set; }
 
@@ -86,6 +98,9 @@ public sealed class IrodoriTtsEngine : IDisposable
     /// <summary>声码器设备（cuda / cpu）——大模型挤显存时把声码器挪到 CPU。</summary>
     private string _codecDevice = "cuda";
 
+    /// <summary>显存上限（MB，0 = 不限）——设了就让 worker 把 CUDA 分配池钳到这个值。</summary>
+    private int _vramLimitMb;
+
     /// <summary>worker 脚本落点。</summary>
     private string _scriptPath = "";
 
@@ -112,6 +127,10 @@ public sealed class IrodoriTtsEngine : IDisposable
                     Base = _state.Base,
                     Precision = _state.Precision,
                     CodecDevice = _state.CodecDevice,
+                    VramLimitMb = _state.VramLimitMb,
+                    VramTotalMb = _state.VramTotalMb,
+                    VramApplied = _state.VramApplied,
+                    VramNote = _state.VramNote,
                     StartupSeconds = _state.StartupSeconds,
                     StartedAt = _state.StartedAt,
                 };
@@ -165,6 +184,7 @@ public sealed class IrodoriTtsEngine : IDisposable
     /// <param name="device">推理设备。</param>
     /// <param name="precision">模型精度。</param>
     /// <param name="codecDevice">声码器设备（空 = 跟随 device）。</param>
+    /// <param name="vramLimitMb">显存上限（MB，0 = 不限）——worker 据此把 CUDA 分配池钳到该值。</param>
     /// <returns>解释器与仓库都在位返回 true。</returns>
     public bool Prepare(
         string python,
@@ -174,7 +194,8 @@ public sealed class IrodoriTtsEngine : IDisposable
         string lora,
         string device,
         string precision,
-        string codecDevice)
+        string codecDevice,
+        int vramLimitMb)
     {
         bool changed = _python != python
             || _repo != repo
@@ -183,7 +204,8 @@ public sealed class IrodoriTtsEngine : IDisposable
             || _lora != lora
             || _device != device
             || _precision != precision
-            || _codecDevice != codecDevice;
+            || _codecDevice != codecDevice
+            || _vramLimitMb != vramLimitMb;
 
         if (changed && Alive)
         {
@@ -198,6 +220,7 @@ public sealed class IrodoriTtsEngine : IDisposable
         _device = device.Length == 0 ? "cuda" : device;
         _precision = precision.Length == 0 ? "bf16" : precision;
         _codecDevice = codecDevice.Length == 0 ? _device : codecDevice;
+        _vramLimitMb = vramLimitMb < 0 ? 0 : vramLimitMb;
 
         string dataRoot = Path.Combine(AppContext.BaseDirectory, "data", "tts");
         try
@@ -274,7 +297,8 @@ public sealed class IrodoriTtsEngine : IDisposable
             + " --codec \"" + _codec + "\""
             + " --device \"" + _device + "\""
             + " --codec-device \"" + _codecDevice + "\""
-            + " --precision \"" + _precision + "\"";
+            + " --precision \"" + _precision + "\""
+            + " --vram-limit-mb \"" + _vramLimitMb.ToString() + "\"";
         if (_lora.Length > 0)
         {
             arguments += " --lora \"" + _lora + "\"";
@@ -355,6 +379,12 @@ public sealed class IrodoriTtsEngine : IDisposable
         string codecDevice = StringOf(node, "codecDevice");
         double seconds = DoubleOf(node, "seconds");
 
+        JsonNode? vramNode = node?["vram"];
+        int vramLimitMb = vramNode is null ? 0 : (int)DoubleOf(vramNode, "limitMb");
+        int vramTotalMb = vramNode is null ? 0 : (int)DoubleOf(vramNode, "totalMb");
+        bool vramApplied = vramNode is not null && BoolOf(vramNode, "applied");
+        string vramNote = vramNode is null ? "" : StringOf(vramNode, "note");
+
         lock (_gate)
         {
             _state.State = "ready";
@@ -364,10 +394,16 @@ public sealed class IrodoriTtsEngine : IDisposable
             _state.Base = baseName;
             _state.Precision = precision;
             _state.CodecDevice = codecDevice;
+            _state.VramLimitMb = vramApplied ? vramLimitMb : 0;
+            _state.VramTotalMb = vramTotalMb;
+            _state.VramApplied = vramApplied;
+            _state.VramNote = vramNote;
             _state.StartupSeconds = seconds;
             _state.StartedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             _state.Message = "引擎就绪（" + seconds.ToString("F1") + " 秒 · " + baseName
-                + " · " + precision + " · 声码器 " + codecDevice + "）";
+                + " · " + precision + " · 声码器 " + codecDevice
+                + (vramApplied ? " · 显存上限 " + vramLimitMb.ToString() + " MB" : "")
+                + "）";
         }
 
         return (true, _state.Message);
